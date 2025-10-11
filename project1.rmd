@@ -1,0 +1,493 @@
+---
+title: "Expected Threat (xT) STAT 479"
+author: "Mason Langer, Rohan Ahuja, Hazim bin Mohd Izani"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    theme: cosmo
+    toc: true
+    toc_float: true
+    number_sections: false
+    code_folding: show
+    df_print: paged
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,    
+  message = FALSE,
+  warning = FALSE
+)
+set.seed(479)
+```
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(hoopR)  
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(janitor)
+  library(ggplot2)
+})
+
+# small helper fx
+`%||%` <- function(a, b) if (is.null(a) || length(a) == 0 || (is.character(a) && a == "")) b else a
+nz <- function(x) ifelse(is.na(x), 0, x)
+first2 <- function(x) { w <- which(!is.na(x)); if (length(w)) x[w[1]] else NA }
+last2  <- function(x) { w <- which(!is.na(x)); if (length(w)) x[w[length(w)]] else NA }
+
+# mirror ESPN full-court x (0..100) into single attacking half (0..50)
+to_halfcourt <- function(x, y) tibble(x = ifelse(x > 50, 100 - x, x), y = y)
+
+```
+
+## Data & preprocessing
+We load the full season PBP from hoopR, normalize the columns (scores, team ids, coordinates), and sort by `game_id` and `game_play_number`
+We normalize season play-by-play (one row per event)
+
+```{r}
+cand <- hoopR::most_recent_nba_season()
+candidate_seasons <- c(cand - 1L, cand)  # eg try 2024 first, then 2025 -> this is to get the latest season
+
+# returns NULL if the call errors or returns an empty frame. this avoids hard stops if a season isnt available
+load_one <- function(s) {
+  out <- try(hoopR::load_nba_pbp(seasons = s) %>% janitor::clean_names(), silent = TRUE)
+  if (inherits(out, "try-error")) return(NULL)
+  if (!is.data.frame(out) || nrow(out) == 0) return(NULL)
+  out
+}
+
+# keeps first non empty results as pbp_raw
+pbp_raw <- NULL; season_used <- NA_integer_
+for (s in candidate_seasons) {
+  tmp <- load_one(s)
+  if (!is.null(tmp)) { pbp_raw <- tmp; season_used <- s; break }
+}
+stopifnot(!is.null(pbp_raw), nrow(pbp_raw) > 0) #just ensures we load something
+
+# Normalization helpers (no mixedtype coalesce) 
+safe_coalesce_chr <- function(df, candidates) {
+  v <- rep(NA_character_, nrow(df))
+  for (nm in candidates) {
+    if (nm %in% names(df)) {
+      src <- df[[nm]]
+      csrc <- as.character(src)
+      csrc[is.na(src)] <- NA_character_
+      v <- ifelse(is.na(v) | v == "", csrc, v)
+    }
+  }
+  v
+}
+
+# Build normalized vectors 
+clock_vec <- safe_coalesce_chr(pbp_raw, c("clock_display_value","clock"))
+text_vec  <- safe_coalesce_chr(pbp_raw, c("text","type_text","play_text","description"))
+
+coord_x <- if ("coordinate_x" %in% names(pbp_raw)) suppressWarnings(as.numeric(pbp_raw$coordinate_x)) else rep(NA_real_, nrow(pbp_raw))
+coord_y <- if ("coordinate_y" %in% names(pbp_raw)) suppressWarnings(as.numeric(pbp_raw$coordinate_y)) else rep(NA_real_, nrow(pbp_raw))
+
+score_value_i <- if ("score_value" %in% names(pbp_raw)) suppressWarnings(as.integer(pbp_raw$score_value)) else rep(NA_integer_, nrow(pbp_raw))
+scoring_play_i <- if ("scoring_play" %in% names(pbp_raw)) suppressWarnings(as.integer(pbp_raw$scoring_play)) else rep(NA_integer_, nrow(pbp_raw))
+game_play_number_i  <- if ("game_play_number" %in% names(pbp_raw)) pbp_raw$game_play_number else seq_len(nrow(pbp_raw))
+team_id_chr <- if ("team_id" %in% names(pbp_raw)) as.character(pbp_raw$team_id) else rep(NA_character_, nrow(pbp_raw))
+home_score_i <- if ("home_score" %in% names(pbp_raw)) pbp_raw$home_score else rep(NA_integer_, nrow(pbp_raw))
+away_score_i <- if ("away_score" %in% names(pbp_raw)) pbp_raw$away_score else rep(NA_integer_, nrow(pbp_raw))
+
+# Final normalized PBP table for the season
+pbp <- pbp_raw %>%
+  dplyr::mutate(
+    game_id = as.character(game_id),
+    period = pbp_raw$period,
+    clock = clock_vec,
+    text = text_vec,
+    team_id = team_id_chr,
+    home_score = home_score_i,
+    away_score = away_score_i,
+    coordinate_x = coord_x,
+    coordinate_y = coord_y,
+    score_value = score_value_i,
+    scoring_play = scoring_play_i,
+    game_play_number = game_play_number_i
+  ) %>%
+  dplyr::select(game_id, period, clock, text, team_id, home_score, away_score,
+                coordinate_x, coordinate_y, score_value, scoring_play, game_play_number) %>%
+  dplyr::arrange(game_id, game_play_number)
+
+# Sanity check
+list(
+  season_used= season_used,
+  total_rows = nrow(pbp),
+  unique_games = dplyr::n_distinct(pbp$game_id),
+  rows_with_coords = sum(!is.na(pbp$coordinate_x) & !is.na(pbp$coordinate_y))
+)
+
+```
+
+### Shot value surface (EP per FGA) with Laplace smoothing
+We mirror to one attacking half, bin shots into a 20×14 grid, and compute EP/FGA with Laplace smoothing toward the league-wide prior.
+
+```{r}
+# Filter to field-goal attempts with coordinates (exclude free throws)
+shots <- pbp %>%
+  dplyr::filter(!is.na(coordinate_x), !is.na(coordinate_y)) %>%
+  dplyr::mutate(
+    tlow = tolower(ifelse(is.na(text), "", as.character(text)))
+  ) %>%
+  dplyr::filter(
+    stringr::str_detect(tlow, "makes|misses"),
+    !stringr::str_detect(tlow, "free throw")
+  ) %>%
+  dplyr::mutate(
+    is_three = stringr::str_detect(tlow, "3[- ]?pt|three"),
+    points_attempt = dplyr::if_else(is_three, 3L, 2L),
+    points_scored = nz(dplyr::if_else(scoring_play == 1L, score_value, 0L))
+  )
+
+# Mirror full court to a single attacking half and bin into a coarse grid
+GRID_NX <- 20; GRID_NY <- 14
+hc <- to_halfcourt(shots$coordinate_x, shots$coordinate_y)
+
+shots <- dplyr::bind_cols(shots, hc) %>%
+  dplyr::mutate(
+    gx = cut(x, breaks = seq(0, 50, length.out = GRID_NX + 1), labels = FALSE, include.lowest = TRUE),
+    gy = cut(y, breaks = seq(0, 50, length.out = GRID_NY + 1), labels = FALSE, include.lowest = TRUE)
+  ) %>%
+  dplyr::filter(!is.na(gx), !is.na(gy))
+
+# Global expected points per FGA (baseline prior)
+global_ep_fga <- sum(shots$points_scored, na.rm = TRUE) / nrow(shots)
+
+# Laplace smoothing toward the global prior
+LAPLACE <- 150
+
+cell <- shots %>%
+  dplyr::group_by(gx, gy) %>%
+  dplyr::summarise(
+    fga = dplyr::n(),
+    pts = sum(points_scored),
+    ep_fga_raw = pts / fga,
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    ep_fga = (pts + LAPLACE * global_ep_fga) / (fga + LAPLACE)
+  )
+
+# Quick report and heatmap
+list(
+  n_shots = nrow(shots),
+  grid_cells = nrow(cell),
+  global_ep_fga = round(global_ep_fga, 3)
+)
+
+cell %>%
+  ggplot2::ggplot(ggplot2::aes(gx, gy, fill = ep_fga)) +
+  ggplot2::geom_tile() +
+  ggplot2::coord_fixed() +
+  ggplot2::scale_fill_viridis_c(name = "EP/FGA") +
+  ggplot2::labs(
+    title = "Shot Value Surface (EP per FGA, Laplace-smoothed)",
+    x = "Court X bin → (halfcourt)", 
+    y = "Court Y bin ↑"
+  )
+
+```
+
+*Figure.* Laplace-smoothed shot value (EP/FGA). Labels approximate halfcourt zones -> brighter = higher value.
+
+```{r}
+# Nice axis labels for halfcourt grid
+x_breaks <- c(1, 4, 8, 12, 16, 20)
+x_labs <- c("Rim", "Paint", "Short 2", "Long 2", "3PT Arc", "Midcourt")
+
+y_breaks <- c(1, 4, 7, 10, 14)
+y_labs <- c("Sideline", "Wing", "Middle", "Wing", "Sideline") # just makes the graph more understandable and intuitive
+
+cell %>%
+  ggplot2::ggplot(ggplot2::aes(gx, gy, fill = ep_fga)) +
+  ggplot2::geom_tile() +
+  ggplot2::coord_fixed() +
+  ggplot2::scale_fill_viridis_c(name = "EP/FGA") +
+  ggplot2::scale_x_continuous(breaks = x_breaks, labels = x_labs, expand = c(0, 0)) +
+  ggplot2::scale_y_continuous(breaks = y_breaks, labels = y_labs, expand = c(0, 0)) +
+  ggplot2::labs(
+    title = "Shot Value Surface (EP per FGA, Laplace-smoothed)",
+    x = NULL, y = NULL
+  ) +
+  ggplot2::theme(
+    axis.text.x = ggplot2::element_text(angle = 15, hjust = 1),
+    panel.grid = ggplot2::element_blank()
+  )
+
+```
+
+
+### Start-context construction (strict prior-shot rule)
+We relabel each shot’s start context only from the previous shot in the same game:
+- **After Opp MAKE (inbound):** previous shot scored and was by the other team.  
+- **After Opp MISS (def reb/transition):** previous shot missed and was by the other team.  
+- **Same Team (2nd chance):** previous shot missed and was by the same team (offensive rebound).  
+- **Start of Game:** first shot of the game.
+
+```{r}
+# Rebuild start context strictly from prior shot team/result
+shots_poss <- shots %>%
+  dplyr::arrange(game_id, game_play_number) %>%
+  dplyr::group_by(game_id) %>%
+  dplyr::mutate(
+    team_id_shot = as.character(team_id),
+    prev_team = dplyr::lag(team_id_shot),
+    prev_points = dplyr::lag(points_scored),
+    same_team = !is.na(prev_team) & team_id_shot == prev_team,
+
+    start_ctx = dplyr::case_when(
+      is.na(prev_team) ~ "Start of Game",
+      prev_points > 0 ~ "After Opp MAKE (inbound)", # after a make, possession flips
+      prev_points == 0 & same_team ~ "Same Team (2nd chance)", # miss + off. rebound
+      prev_points == 0 & !same_team ~ "After Opp MISS (def reb/transition)",  # miss + def. rebound
+      TRUE ~ "Unknown"
+    ),
+
+    # Possession proxy id: increment when shooting team changes
+    poss_id_shot = cumsum(dplyr::row_number() == 1L |
+                          team_id_shot != dplyr::lag(team_id_shot, default = first(team_id_shot))),
+
+    points_offense = points_scored
+  ) %>%
+  dplyr::ungroup()
+
+# Sanity checks
+list(
+  n_possessions_shot = nrow(shots_poss),
+  ppp_shot_only_fg = round(mean(shots_poss$points_offense, na.rm = TRUE), 3)
+)
+
+shots_poss %>% dplyr::count(start_ctx, sort = TRUE)
+```
+
+
+### EPV at possession start (by context)
+We use the previous shot’s result and team to classify the start context (inbound after make, defensive rebound/transition after miss, same-team 2nd chance, start of game) and estimate EPV at the start of each shot-possession.
+
+```{r}
+# count shots per context
+ctx_counts <- shots_poss %>%
+  dplyr::count(start_ctx, sort = TRUE)
+ctx_counts
+
+# EPV_start = mean points per shot-possession given the start context
+epv_start_ctx <- shots_poss %>%
+  dplyr::group_by(start_ctx) %>%
+  dplyr::summarise(
+    n_poss = dplyr::n(),
+    epv_start = mean(points_offense, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(desc(epv_start))
+epv_start_ctx
+
+# Quick bar chart
+ggplot2::ggplot(epv_start_ctx, ggplot2::aes(reorder(start_ctx, epv_start), epv_start)) +
+  ggplot2::geom_col() +
+  ggplot2::coord_flip() +
+  ggplot2::labs(title = "EPV at Possession Start (by start context)",
+                x = NULL, y = "Expected Points per Shot-Possession")
+
+```
+
+### xT-like delta (end shot value − start EPV)
+ΔxT measures how much value a possession gained from its start context to the terminal shot location (grid EP/FGA − EPV_start).
+
+```{r}
+# xT-like delta: end shot value − start EPV 
+
+# attach end-location value (EP/FGA) from the shot surface onto each shot
+shots_poss2 <- shots_poss %>%
+  dplyr::left_join(cell %>% dplyr::select(gx, gy, ep_fga), by = c("gx","gy"))
+
+# attach EPV_start from start context
+shots_poss2 <- shots_poss2 %>%
+  dplyr::left_join(epv_start_ctx %>% dplyr::select(start_ctx, epv_start), by = "start_ctx")
+
+# delta = end shot value − start EPV
+shots_poss2 <- shots_poss2 %>%
+  dplyr::mutate(xt_delta = ep_fga - epv_start)
+
+# quick sanity checks
+sum(is.na(shots_poss2$ep_fga)) # should be 0
+sum(is.na(shots_poss2$epv_start))  # should be 0
+summary(shots_poss2$xt_delta)
+
+# Context leaderboard
+xt_by_ctx <- shots_poss2 %>%
+  dplyr::group_by(start_ctx) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    mean_delta = mean(xt_delta, na.rm = TRUE),
+    median_delta = median(xt_delta, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(dplyr::desc(mean_delta))
+
+xt_by_ctx
+
+ggplot2::ggplot(xt_by_ctx, ggplot2::aes(reorder(start_ctx, mean_delta), mean_delta)) +
+  ggplot2::geom_col() +
+  ggplot2::coord_flip() +
+  ggplot2::labs(title = "xT-like Δ (End Shot Value − Start EPV)",
+                x = NULL, y = "Δ Expected Points")
+
+```
+
+### Player impact (shooter-only)
+We credit 100% of ΔxT to the shooter for a first-pass view of impact.
+
+```{r}
+# Extract shooter name to each shot
+extract_shooter <- function(s) {
+  s <- ifelse(is.na(s), "", s)
+  nm <- stringr::str_extract(s, "^[A-Za-z.' -]+(?=\\s+(?:makes|misses))")
+  stringr::str_squish(nm)
+}
+
+shots_poss2 <- shots_poss2 %>%
+  dplyr::mutate(shooter = extract_shooter(text))
+
+# Aggregate ΔxT by player
+player_xt <- shots_poss2 %>%
+  dplyr::filter(!is.na(shooter) & shooter != "") %>%
+  dplyr::group_by(shooter) %>%
+  dplyr::summarise(
+    shots = dplyr::n(),
+    xt_delta_sum = sum(xt_delta, na.rm = TRUE),
+    xt_delta_mean = mean(xt_delta, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(dplyr::desc(xt_delta_sum))
+
+# Top 20 by total ΔxT
+top20_xt <- player_xt %>% dplyr::slice_head(n = 20)
+top20_xt
+
+# Plot
+ggplot2::ggplot(top20_xt, ggplot2::aes(reorder(shooter, xt_delta_sum), xt_delta_sum)) +
+  ggplot2::geom_col() +
+  ggplot2::coord_flip() +
+  ggplot2::labs(
+    title = "Top 20 Players by Total xT-like Gain (ΔxT)",
+    x = NULL, y = "Total ΔxT (sum of end-value − start EPV)"
+  )
+
+```
+
+
+#### Player impact with rebound shares (70% shooter / 30% rebounder)
+On second-chance and defensive-rebound transitions, we split ΔxT 70/30 between shooter and rebounder.
+```{r}
+# helper fx to pull a name from rebound text (common ESPN phrasings)
+extract_rebounder <- function(s) {
+  s <- ifelse(is.na(s), "", s)
+  # "Firstname Lastname offensive/defensive rebound"
+  m1 <- stringr::str_extract(s, "^[A-Za-z.' -]+(?=\\s+(?:offensive|defensive) rebound)")
+  # "rebound by Firstname Lastname"
+  m2 <- stringr::str_extract(s, "(?<=rebound by\\s)[A-Za-z.' -]+")
+  nm <- ifelse(!is.na(m1), m1, m2)
+  stringr::str_squish(nm)
+}
+
+# Build a filled table with the last OFF/DEF rebound seen up to each play
+reb_fill <- pbp %>%
+  dplyr::mutate(
+    tlow = tolower(ifelse(is.na(text), "", text)),
+    is_off_reb = stringr::str_detect(tlow, "offensive rebound"),
+    is_def_reb = stringr::str_detect(tlow, "defensive rebound"),
+    off_order  = dplyr::if_else(is_off_reb, game_play_number, NA_integer_),
+    def_order  = dplyr::if_else(is_def_reb, game_play_number, NA_integer_),
+    off_name   = dplyr::if_else(is_off_reb, extract_rebounder(text), NA_character_),
+    def_name   = dplyr::if_else(is_def_reb, extract_rebounder(text), NA_character_)
+  ) %>%
+  dplyr::arrange(game_id, game_play_number) %>%
+  dplyr::group_by(game_id) %>%
+  tidyr::fill(off_order, off_name, .direction = "down") %>%
+  tidyr::fill(def_order, def_name, .direction = "down") %>%
+  dplyr::ungroup() %>%
+  dplyr::select(game_id, game_play_number, off_order, off_name, def_order, def_name)
+
+# Add the rebounder that occurred AFTER the previous shot but BEFORE this shot
+shots_poss3 <- shots_poss %>%
+  dplyr::group_by(game_id) %>%
+  dplyr::mutate(prev_shot_order = dplyr::lag(game_play_number)) %>%
+  dplyr::ungroup() %>%
+  dplyr::left_join(reb_fill, by = c("game_id","game_play_number")) %>%
+  dplyr::mutate(
+    # valid if the last rebound came after the previous shot in the game
+    valid_off = !is.na(off_order) & !is.na(prev_shot_order) & off_order > prev_shot_order & off_order < game_play_number,
+    valid_def = !is.na(def_order) & !is.na(prev_shot_order) & def_order > prev_shot_order & def_order < game_play_number,
+    starter_name = dplyr::case_when(
+      start_ctx == "Same Team (2nd chance)" & valid_off ~ off_name,
+      start_ctx == "After Opp MISS (def reb/transition)" & valid_def ~ def_name,
+      TRUE ~ NA_character_
+    ),
+    shooter_name = stringr::str_squish(stringr::str_extract(text, "^[A-Za-z.' -]+(?=\\s+(?:makes|misses))"))
+  )
+
+# 70/30 split where applicable, otherwise 100% shooter
+shots_credit <- shots_poss2 %>% # has xt_delta, shooter already
+  dplyr::select(game_id, game_play_number, xt_delta, start_ctx, shooter) %>%
+  dplyr::left_join(shots_poss3 %>% dplyr::select(game_id, game_play_number, starter_name),
+                   by = c("game_id","game_play_number")) %>%
+  dplyr::mutate(
+    split_to_starter = dplyr::case_when(
+      start_ctx %in% c("Same Team (2nd chance)", "After Opp MISS (def reb/transition)") &
+        !is.na(starter_name) ~ 0.30, # 30% to rebounder
+      TRUE ~ 0.00
+    ),
+    split_to_shooter = 1 - split_to_starter
+  )
+
+# Build player-level credits
+credit_starter <- shots_credit %>%
+  dplyr::filter(!is.na(starter_name), split_to_starter > 0) %>%
+  dplyr::group_by(player = starter_name) %>%
+  dplyr::summarise(xt_credit = sum(xt_delta * split_to_starter, na.rm = TRUE),
+                   events = dplyr::n(), .groups = "drop")
+
+credit_shooter <- shots_credit %>%
+  dplyr::filter(!is.na(shooter) & shooter != "") %>%
+  dplyr::group_by(player = shooter) %>%
+  dplyr::summarise(xt_credit = sum(xt_delta * split_to_shooter, na.rm = TRUE),
+                   events = dplyr::n(), .groups = "drop")
+
+player_xt_shared <- dplyr::bind_rows(credit_shooter, credit_starter) %>%
+  dplyr::group_by(player) %>%
+  dplyr::summarise(
+    xt_credit_total = sum(xt_credit, na.rm = TRUE),
+    events = sum(events, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(dplyr::desc(xt_credit_total))
+
+# Top 20 with shared credit
+top20_shared <- player_xt_shared %>% dplyr::slice_head(n = 20)
+top20_shared
+
+ggplot2::ggplot(top20_shared, ggplot2::aes(reorder(player, xt_credit_total), xt_credit_total)) +
+  ggplot2::geom_col() +
+  ggplot2::coord_flip() +
+  ggplot2::labs(
+    title = "Top 20 Players by xT-like Impact (70% shooter / 30% rebounder share)",
+    x = NULL, y = "Total xT-like Credit"
+  )
+
+```
+
+
+
+
+
+
+
+
+

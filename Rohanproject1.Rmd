@@ -1,0 +1,451 @@
+---
+title: "projRohan"
+output: html_document
+date: "2025-10-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+library(hoopR)
+library(dplyr); library(tidyr); library(stringr); library(purrr)
+library(lubridate); library(janitor); library(tibble); library(readr)
+library(forcats); library(ggplot2)
+library(rsample); library(yardstick)
+library(recipes); library(workflows); library(parsnip)
+library(ranger); library(xgboost)
+
+# ---- config & helpers
+SEASONS <- 2024:2025
+OUT_DIR <- "xg_outputs_pbp"
+dir.create(OUT_DIR, showWarnings = FALSE)
+
+`%||%` <- function(a, b) if (!is.null(a)) a else b
+
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r}
+get_teams_for_season <- function(season) {
+  pbp <- hoopR::load_nba_pbp(season) %>% clean_names()
+
+  home <- pbp %>%
+    transmute(
+      id  = as.integer(home_team_id),
+      full_name = home_team_name,
+      abbreviation = home_team_abbrev,
+      season = season
+    )
+
+  away <- pbp %>%
+    transmute(
+      id  = as.integer(away_team_id),
+      full_name = away_team_name,
+      abbreviation = away_team_abbrev,
+      season = season
+    )
+
+  bind_rows(home, away) %>%
+    filter(!is.na(id), !is.na(full_name), full_name != "") %>%
+    distinct(id, full_name, abbreviation, season) %>%
+    arrange(id)
+}
+
+# use it:
+teams <- purrr::map_df(SEASONS, get_teams_for_season)
+
+```
+
+```{r}
+# NON-hoopR PBP: shot locations from NBA Stats via hoopR
+get_shotchartdetail <- function(team_id, season){
+  fns <- c("nba_shotchartdetail","nba_stats_shotchartdetail")
+  for (fn in fns) if (exists(fn, mode="function")) {
+    res <- try(do.call(get(fn), list(
+      team_id = team_id, player_id = 0, season = as.character(season),
+      season_type = "Regular Season", context_measure = "FGA"
+    )), silent = TRUE)
+    if (!inherits(res, "try-error")) return(res)
+  }
+  stop("shotchartdetail endpoint not available in this hoopR build.")
+}
+
+shots_by_team <- purrr::map2_dfr(
+  teams$id, teams$season,
+  ~{
+    res <- get_shotchartdetail(.x, .y)
+    df <- res[["Shot_Chart_Detail"]] %>% janitor::clean_names()
+    df$season <- .y
+    df
+  }
+)
+
+```
+
+```{r}
+pbp <- purrr::map_df(SEASONS, ~ hoopR::load_nba_pbp(.x)) %>% clean_names()
+
+# Keep only field-goal shot attempts (exclude FTs), and keep ESPN shot coords
+pbp <- pbp %>%
+  mutate(
+    txt = tolower(coalesce(type_text, text)),
+    is_ft = str_detect(txt, "free throw")
+  )
+
+shots <- pbp %>%
+  filter(shooting_play == TRUE, !is_ft) %>%
+  transmute(
+    season,
+    game_id,
+    game_event_id = id,                # ESPN event id
+    team_id,
+    player_id = athlete_id_1,          # shooter (may be NA for some events)
+    period = coalesce(period, period_number),
+    clock_min = clock_minutes,
+    clock_sec = clock_seconds,
+    # outcome & value
+    made = as.integer(score_value > 0),  # for FGA, 2/3 on makes, 0 on misses
+    is_three = as.integer(
+      (str_detect(tolower(type_abbreviation %||% ""), "3") |
+       str_detect(tolower(type_text %||% ""), "3") |
+       score_value == 3)
+    ),
+    shot_value = if_else(is_three == 1L, 3L, 2L),
+    # location (ESPN coords already provided in PBP)
+    x_raw = as.numeric(coordinate_x),
+    y_raw = as.numeric(coordinate_y),
+    # optional game context you might want later
+    home_score = as.integer(home_score),
+    away_score = as.integer(away_score)
+  ) %>%
+  filter(!is.na(x_raw), !is.na(y_raw), !is.na(made))
+
+
+
+```
+
+```{r}
+rng_x <- range(shots$x_raw, na.rm = TRUE)
+rng_y <- range(shots$y_raw, na.rm = TRUE)
+norm_xy <- function(v, rng) (v - rng[1]) / (rng[2] - rng[1])
+
+# If your court is flipped vertically relative to the offensive hoop, set FLIP_Y <- TRUE
+FLIP_Y <- FALSE
+
+shots <- shots %>%
+  mutate(
+    x01 = norm_xy(x_raw, rng_x),
+    y01 = norm_xy(y_raw, rng_y),
+    y01 = if (FLIP_Y) 1 - y01 else y01,
+    # Centered coords (0 at middle)
+    xc = x01 - 0.5,
+    yc = y01 - 0.5,
+    r  = sqrt(xc^2 + yc^2),
+    angle = atan2(yc, xc),
+    angle_deg = angle * 180/pi,
+    # coarse zones on normalized court
+    corner3 = as.integer(is_three == 1L & abs(yc) < 0.15 & abs(xc) > 0.40),
+    above_break3 = as.integer(is_three == 1L & !corner3),
+    paint = as.integer(is_three == 0L & abs(xc) < 0.16 & yc < 0.27),
+    midrange = as.integer(is_three == 0L & !paint),
+    period = factor(period)
+  )
+
+
+
+```
+
+```{r}
+set.seed(479)
+game_split <- shots %>%
+  distinct(game_id) %>%
+  mutate(split = sample(c("train","test"), n(), TRUE, c(0.8,0.2)))
+shots <- shots %>% left_join(game_split, by="game_id")
+
+d_train <- shots %>% filter(split=="train")
+d_test  <- shots %>% filter(split=="test")
+
+base_formula <- as.formula(
+  "made ~ xc + yc + r + angle_deg + is_three + corner3 + above_break3 + paint + midrange + period"
+)
+```
+
+```{r}
+rf_fit <- ranger(
+  formula = base_formula,
+  data = d_train %>% mutate(made = factor(made, levels=c(0,1))),
+  probability = TRUE,
+  num.trees = 1200,
+  mtry = 5,
+  min.node.size = 50,
+  seed = 479
+)
+
+rf_train_p <- predict(rf_fit, data = d_train)$predictions[, "1"]
+rf_test_p  <- predict(rf_fit, data = d_test)$predictions[, "1"]
+
+```
+
+
+```{r}
+# --- Build the recipe ONLY on predictors; leave outcome alone ---
+rec <- recipe(
+  made ~ xc + yc + r + angle_deg + is_three + corner3 + above_break3 + paint + midrange + period,
+  data = d_train
+) %>%
+  # make sure period is a factor; other predictors are numeric already
+  step_mutate(period = as.factor(period)) %>%
+  # dummy encode predictor factors only (NOT the outcome)
+  step_dummy(all_nominal_predictors(), one_hot = TRUE)
+
+# Prep on the training data and keep the processed training set
+rec_prep <- prep(rec, training = d_train, retain = TRUE)
+
+# Count predictors after dummying (exclude outcome)
+p <- ncol(juice(rec_prep)) - 1L
+mtry_val <- max(1L, floor(0.8 * p))  # 80% of predictors as an integer count
+
+# XGBoost spec using integer mtry (your parsnip doesn’t support counts=FALSE)
+xgb_spec <- boost_tree(
+  trees = 1600, learn_rate = 0.05, tree_depth = 7,
+  mtry = mtry_val, min_n = 40, loss_reduction = 0
+) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+wf <- workflow() %>%
+  add_model(xgb_spec) %>%
+  add_recipe(rec)
+
+xgb_fit <- wf %>% fit(d_train)
+
+# Predict prob of class "1"
+xgb_train_p <- predict(xgb_fit, d_train, type = "prob")$.pred_1
+xgb_test_p  <- predict(xgb_fit,  d_test,  type = "prob")$.pred_1
+
+```
+
+
+```{r}
+# --- Metrics: coerce factor outcome to numeric 0/1 safely ---
+to01 <- function(y) {
+  if (is.factor(y)) as.numeric(y) - 1L else as.numeric(y)
+}
+
+brier <- function(y, p) {
+  y_num <- to01(y)
+  p <- pmin(pmax(p, 1e-12), 1 - 1e-12)
+  mean((y_num - p)^2, na.rm = TRUE)
+}
+
+logloss <- function(y, p) {
+  y_num <- to01(y)
+  p <- pmin(pmax(p, 1e-12), 1 - 1e-12)
+  -mean(y_num*log(p) + (1 - y_num)*log(1 - p), na.rm = TRUE)
+}
+
+eval_model <- function(name, y_tr, p_tr, y_te, p_te){
+  cat("\n===", name, "===\n")
+  cat("Train  Brier:", round(brier(y_tr, p_tr), 4),
+      "| LogLoss:", round(logloss(y_tr, p_tr), 4),
+      "| ROC AUC:", round(roc_auc_vec(y_tr, p_tr, event_level = "second"), 4), "\n")
+  cat("Test   Brier:", round(brier(y_te, p_te), 4),
+      "| LogLoss:", round(logloss(y_te, p_te), 4),
+      "| ROC AUC:", round(roc_auc_vec(y_te, p_te, event_level = "second"), 4), "\n")
+}
+
+# re-run summaries
+eval_model("RandomForest", d_train$made, rf_train_p, d_test$made, rf_test_p)
+eval_model("XGBoost",      d_train$made, xgb_train_p, d_test$made, xgb_test_p)
+
+# --- Calibration (use numeric 0/1; drop NA groups) ---
+cal <- tibble(
+  y = to01(d_test$made),
+  p = pmin(pmax(xgb_test_p, 1e-12), 1 - 1e-12)
+) %>%
+  mutate(bin = ntile(p, 20)) %>%
+  group_by(bin) %>%
+  summarise(
+    p_hat = mean(p, na.rm = TRUE),
+    p_obs = mean(y, na.rm = TRUE),
+    n = dplyr::n(),
+    .groups = "drop"
+  ) %>%
+  tidyr::drop_na(p_hat, p_obs)
+
+ggplot(cal, aes(p_hat, p_obs, size = n)) +
+  geom_point() + geom_abline(linetype = 2) + coord_equal() +
+  labs(title="xG calibration (XGBoost, test set)",
+       x="Predicted make prob", y="Observed make rate") +
+  theme_minimal()
+
+
+```
+
+
+
+```{r}
+
+d_test_preds <- d_test %>%
+  mutate(
+    xg_rf  = rf_test_p,
+    xg_xgb = xgb_test_p,
+    xep_rf  = xg_rf  * shot_value,
+    xep_xgb = xg_xgb * shot_value
+  ) %>%
+  select(season, game_id, game_event_id, team_id, player_id,
+         period, x_raw, y_raw, xc, yc, made, is_three, shot_value,
+         xg_rf, xg_xgb, xep_rf, xep_xgb)
+
+write_csv(d_test_preds, file.path(OUT_DIR, "shots_xg_xep_pbp_test.csv"))
+
+# Player summaries (if shooter id is present)
+player_summary <- d_test_preds %>%
+  group_by(player_id) %>%
+  summarise(
+    attempts = n(),
+    make_rate = mean(made),
+    xg = mean(xg_xgb),
+    xep = mean(xep_xgb),
+    points_actual = sum(if_else(made==1, shot_value, 0)),
+    xep_total = sum(xep_xgb),
+    over_perf_pts = points_actual - xep_total,
+    .groups="drop"
+  ) %>% arrange(desc(xep_total))
+write_csv(player_summary, file.path(OUT_DIR, "player_xep_pbp_test.csv"))
+
+cat("\nOutputs written to:", normalizePath(OUT_DIR), "\n")
+```
+
+
+
+```{r}
+library(stringr)
+# robust name extraction for shooting plays
+player_meta <- pbp %>%
+  filter(shooting_play == TRUE, !is.na(athlete_id_1), !is.na(text)) %>%
+  transmute(
+    player_id   = as.integer(athlete_id_1),
+    # grab first "Firstname Lastname" before 'makes/misses'
+    player_name = str_extract(text, "^[A-Z][a-zA-Z\\-'.]+\\s[A-Z][a-zA-Z\\-'.]+")
+  ) %>%
+  filter(!is.na(player_name)) %>%
+  mutate(player_name = str_squish(player_name)) %>%
+  count(player_id, player_name, sort = TRUE) %>%
+  group_by(player_id) %>% slice_max(n, n = 1, with_ties = FALSE) %>% ungroup() %>%
+  select(player_id, player_name)
+
+# make sure this table is per-player
+player_summary <- d_test_preds %>%
+  mutate(player_id = as.integer(player_id),
+         made_num  = as.numeric(made) - 1L) %>%   # 0/1 for convenience
+  filter(!is.na(player_id)) %>%
+  group_by(player_id) %>%
+  summarise(
+    attempts      = n(),
+    make_rate     = mean(made_num),
+    xg            = mean(xg_xgb),
+    xep           = mean(xep_xgb),
+    points_actual = sum(if_else(made_num == 1, shot_value, 0)),
+    xep_total     = sum(xep_xgb),
+    over_perf_pts = points_actual - xep_total,
+    .groups = "drop"
+  )
+
+player_summary_named <- player_summary %>%
+  left_join(player_meta, by = "player_id") %>%
+  relocate(player_name, .before = player_id)
+
+# sanity checks
+stopifnot(nrow(player_summary_named) == dplyr::n_distinct(player_summary_named$player_id))
+sum(is.na(player_summary_named$player_name))  # should be small/zero
+
+player_summary_named %>%
+  arrange(desc(xep_total)) %>%
+  head(20)
+
+
+```
+
+
+```{r}
+
+library(dplyr)
+
+# Ensure types and join names
+d_test_preds2 <- d_test_preds %>%
+  mutate(
+    player_id = as.integer(player_id),
+    team_id   = as.integer(team_id),
+    made_num  = as.numeric(made) - 1L
+  )
+
+# If you built player_meta from PBP regex earlier:
+#   player_meta: columns player_id, player_name
+# (If you also want team names, build team_lookup from pbp as shown before and left_join here.)
+
+threat_by_player <- d_test_preds2 %>%
+  left_join(player_meta, by = "player_id") %>%
+  group_by(player_id, player_name) %>%
+  summarise(
+    attempts      = n(),
+    make_rate     = mean(made_num),
+    xg            = mean(xg_xgb),
+    xep           = mean(xep_xgb),               # expected points per shot
+    points_actual = sum(if_else(made_num == 1, shot_value, 0)),
+    xep_total     = sum(xep_xgb),                # total expected points
+    over_perf_pts = points_actual - xep_total,
+    .groups = "drop"
+  )
+
+MIN_ATT <- 200  # adjust floor to taste
+
+nba_total_threat <- threat_by_player %>%
+  filter(attempts >= MIN_ATT) %>%
+  arrange(desc(xep_total)) %>%
+  select(player_name, player_id, attempts, xg, xep, xep_total, points_actual, over_perf_pts)
+
+print(head(nba_total_threat, 25), n = 25)
+# readr::write_csv(nba_total_threat, file.path(OUT_DIR, "nba_leaders_total_threat.csv"))
+
+```
+
+
+```{r}
+nba_per_shot_threat <- threat_by_player %>%
+  filter(attempts >= MIN_ATT) %>%         # keep some stability
+  arrange(desc(xep)) %>%
+  select(player_name, player_id, attempts, xg, xep, xep_total, points_actual, over_perf_pts)
+
+print(head(nba_per_shot_threat, 25), n = 25)
+# readr::write_csv(nba_per_shot_threat, file.path(OUT_DIR, "nba_leaders_per_shot_threat.csv"))
+
+# Standardize both dimensions and sum for a composite "threat index"
+blend <- threat_by_player %>%
+  filter(attempts >= MIN_ATT) %>%
+  mutate(
+    z_total = scale(xep_total)[,1],
+    z_rate  = scale(xep)[,1],
+    threat_index = z_total + z_rate
+  ) %>%
+  arrange(desc(threat_index)) %>%
+  select(player_name, player_id, attempts, xep_total, xep, threat_index)
+
+print(head(blend, 25), n = 25)
+# readr::write_csv(blend, file.path(OUT_DIR, "nba_leaders_threat_index.csv"))
+
+
+```
