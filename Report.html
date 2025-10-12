@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 
-<title>Project 1: Deriving Expected Possession from Play-By-Play Context</title>
+<title>Project 1: Deriving Expected Possession Values and ‘Threat’ from Play-By-Play Context</title>
 <style>
 code{white-space: pre-wrap;}
 span.smallcaps{font-variant: small-caps;}
@@ -79,7 +79,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 <header id="title-block-header" class="quarto-title-block default">
 <div class="quarto-title">
-<h1 class="title">Project 1: Deriving Expected Possession from Play-By-Play Context</h1>
+<h1 class="title">Project 1: Deriving Expected Possession Values and ‘Threat’ from Play-By-Play Context</h1>
 </div>
 
 
@@ -106,8 +106,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <h1>Executive Summary</h1>
 <p>Our project aims to define the expected outcome value of an in-game possession based on sequences of play through publicly available NBA play-by-play data. Specifically, the model outlined in the following report intends to show the expected points from a given possession based on key actions, including how the sequence began (rebound, turnover), passing players, and the location that the sequence ended on the court. From this data and the our resulting models, we’ve highlighted multiple actions that optimize the expected outcome of a sequence and what players exceeded their expected value based on the plays they were on the court for.</p>
 <p>Similar advanced statistics have been proposed and implemented for basketball analytics. Particularly the likes of Adjusted Plus-Minus (+/-) have long been used to estimate the efficacy of a player based on their team’s performance while on the court. Further, football (soccer) analytics utilizes an expected goals (xG) model to estimate the probability that a shot results in a goal given a number of factors, including where the shot occured on the pitch, where the nearest defender was, and whether the player was on the left or the right side of the field. These statistics provided motivation for our model, which considered aspects of both, namely player contribution and expectation based on play context. However, our derived metric diverged, aiming to abstract higher than the single player action-level (e.g.&nbsp;a shot) while also identifying players who initiated/ended successful sequences of play at a higher rate than their peers.</p>
-<p>In order to engineer an accurate final expected possession value model, we developed three models using the same set of data to determine which methodology would lead to the most refined results. With the model we determined to be the most effective based on several statistical insights and qualitative analysis, we have found…</p>
-<p><em>Results go here…</em></p>
+<p>In order to engineer an accurate final expected possession value model, we iteratively developed a workflow of three different models by using a set of play-by-play data to conclude a successful estimated threat model. With the final model in place and subsequent analysis of its results based on statistical insights and qualitative analysis, we have found that the expected threat (xT) metric is able to holistically model a player’s impact on the court. Particularly, using the metric as either a total (a player’s impact over a full season) or as an average per sequence of play, two different insights can be learned. For the former, xT tends to converge with other advanced metrics often employed to describe elite, All-Star athletes or MVP-caliber players. For instance, with this approach, we have found players like former MVPs such as Giannis Antetokounmpo and Nikola Jokic, alongside burgeoning star players like Alperen Sengun and Anthony Edwards, to be among the upper echelon of total xT. On the other hand, viewing the metric as an average per sequence of play tends to reveal players that may not traditionally be among the highest caliber of player, but take a high volume of highly advantageous shots, like Malik Beasley, OG Anunoby, and Darius Garland.</p>
 </section>
 <section id="technical-report" class="level1">
 <h1>Technical Report</h1>
@@ -124,33 +123,1050 @@ Note
 <p>In order to replicate the models and findings below, the following libraries are necessary to run the relevant R code:</p>
 <div class="cell">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="do">##install.packages("hoopR", "ranger","xgboost")</span></span>
-<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(tidyverse)</span>
-<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(hoopR)</span>
-<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(ranger)</span>
-<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(xgboost)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(hoopR)</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(ranger)</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(hoopR)  </span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(dplyr)</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(tidyr)</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(stringr)</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(janitor)</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(ggplot2)</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(hoopR)</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(purrr)</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(lubridate)</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(tibble)</span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(readr)</span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(forcats)</span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(rsample)</span>
+<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(yardstick)</span>
+<span id="cb1-18"><a href="#cb1-18" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(recipes)</span>
+<span id="cb1-19"><a href="#cb1-19" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(workflows)</span>
+<span id="cb1-20"><a href="#cb1-20" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(parsnip)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 </div>
 </div>
 <section id="gathering-data" class="level2">
 <h2 class="anchored" data-anchor-id="gathering-data">Gathering Data</h2>
+<p>Data for the report was sourced using the hoopR library to gather play-by-play (often denoted as <em>pbp</em>) data and detailed shot-related data. With this, we were able to derive relative coordinates where plays were initiated and ended, alongside distance to the offensive team’s basket, and how a sequence of play started.</p>
+<p>Specific hoopR endpoints that were used throughout our research include <em>load_nba_pbp</em> and <em>nba_shotchartdetail</em>, along with scripts wrote to parse PBP data into condensed features representing a “sequence of play.” These sequences of play, as detailed above, include coordinates for the starting and ending locations, the action that started a play and ended the sequence, distance to hoop, and which area of the court the play ended.</p>
+<div class="callout callout-style-default callout-note callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Note
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p>To run the following code, certain helper functions and data are expected to be used, including:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb2"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>SEASONS <span class="ot">&lt;-</span> <span class="dv">2024</span><span class="sc">:</span><span class="dv">2025</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>OUT_DIR <span class="ot">&lt;-</span> <span class="st">"xg_outputs_pbp"</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="fu">dir.create</span>(OUT_DIR, <span class="at">showWarnings =</span> <span class="cn">FALSE</span>)</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="st">`</span><span class="at">%||%</span><span class="st">`</span> <span class="ot">&lt;-</span> <span class="cf">function</span>(a, b) <span class="cf">if</span> (<span class="fu">is.null</span>(a) <span class="sc">||</span> <span class="fu">length</span>(a) <span class="sc">==</span> <span class="dv">0</span> <span class="sc">||</span> (<span class="fu">is.character</span>(a) <span class="sc">&amp;&amp;</span> a <span class="sc">==</span> <span class="st">""</span>)) b <span class="cf">else</span> a</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>nz <span class="ot">&lt;-</span> <span class="cf">function</span>(x) <span class="fu">ifelse</span>(<span class="fu">is.na</span>(x), <span class="dv">0</span>, x)</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>first2 <span class="ot">&lt;-</span> <span class="cf">function</span>(x) { w <span class="ot">&lt;-</span> <span class="fu">which</span>(<span class="sc">!</span><span class="fu">is.na</span>(x)); <span class="cf">if</span> (<span class="fu">length</span>(w)) x[w[<span class="dv">1</span>]] <span class="cf">else</span> <span class="cn">NA</span> }</span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>last2  <span class="ot">&lt;-</span> <span class="cf">function</span>(x) { w <span class="ot">&lt;-</span> <span class="fu">which</span>(<span class="sc">!</span><span class="fu">is.na</span>(x)); <span class="cf">if</span> (<span class="fu">length</span>(w)) x[w[<span class="fu">length</span>(w)]] <span class="cf">else</span> <span class="cn">NA</span> }</span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>to01 <span class="ot">&lt;-</span> <span class="cf">function</span>(y) {</span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span> (<span class="fu">is.factor</span>(y)) <span class="fu">as.numeric</span>(y) <span class="sc">-</span> <span class="dv">1</span>L <span class="cf">else</span> <span class="fu">as.numeric</span>(y)</span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a>brier <span class="ot">&lt;-</span> <span class="cf">function</span>(y, p) {</span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a>  y_num <span class="ot">&lt;-</span> <span class="fu">to01</span>(y)</span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a>  p <span class="ot">&lt;-</span> <span class="fu">pmin</span>(<span class="fu">pmax</span>(p, <span class="fl">1e-12</span>), <span class="dv">1</span> <span class="sc">-</span> <span class="fl">1e-12</span>)</span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a>  <span class="fu">mean</span>((y_num <span class="sc">-</span> p)<span class="sc">^</span><span class="dv">2</span>, <span class="at">na.rm =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb2-18"><a href="#cb2-18" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb2-19"><a href="#cb2-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-20"><a href="#cb2-20" aria-hidden="true" tabindex="-1"></a>logloss <span class="ot">&lt;-</span> <span class="cf">function</span>(y, p) {</span>
+<span id="cb2-21"><a href="#cb2-21" aria-hidden="true" tabindex="-1"></a>  y_num <span class="ot">&lt;-</span> <span class="fu">to01</span>(y)</span>
+<span id="cb2-22"><a href="#cb2-22" aria-hidden="true" tabindex="-1"></a>  p <span class="ot">&lt;-</span> <span class="fu">pmin</span>(<span class="fu">pmax</span>(p, <span class="fl">1e-12</span>), <span class="dv">1</span> <span class="sc">-</span> <span class="fl">1e-12</span>)</span>
+<span id="cb2-23"><a href="#cb2-23" aria-hidden="true" tabindex="-1"></a>  <span class="sc">-</span><span class="fu">mean</span>(y_num<span class="sc">*</span><span class="fu">log</span>(p) <span class="sc">+</span> (<span class="dv">1</span> <span class="sc">-</span> y_num)<span class="sc">*</span><span class="fu">log</span>(<span class="dv">1</span> <span class="sc">-</span> p), <span class="at">na.rm =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb2-24"><a href="#cb2-24" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb2-25"><a href="#cb2-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-26"><a href="#cb2-26" aria-hidden="true" tabindex="-1"></a>eval_model <span class="ot">&lt;-</span> <span class="cf">function</span>(name, y_tr, p_tr, y_te, p_te){</span>
+<span id="cb2-27"><a href="#cb2-27" aria-hidden="true" tabindex="-1"></a>  <span class="fu">cat</span>(<span class="st">"</span><span class="sc">\n</span><span class="st">==="</span>, name, <span class="st">"===</span><span class="sc">\n</span><span class="st">"</span>)</span>
+<span id="cb2-28"><a href="#cb2-28" aria-hidden="true" tabindex="-1"></a>  <span class="fu">cat</span>(<span class="st">"Train  Brier:"</span>, <span class="fu">round</span>(<span class="fu">brier</span>(y_tr, p_tr), <span class="dv">4</span>),</span>
+<span id="cb2-29"><a href="#cb2-29" aria-hidden="true" tabindex="-1"></a>      <span class="st">"| LogLoss:"</span>, <span class="fu">round</span>(<span class="fu">logloss</span>(y_tr, p_tr), <span class="dv">4</span>))</span>
+<span id="cb2-30"><a href="#cb2-30" aria-hidden="true" tabindex="-1"></a>  <span class="fu">cat</span>(<span class="st">"Test   Brier:"</span>, <span class="fu">round</span>(<span class="fu">brier</span>(y_te, p_te), <span class="dv">4</span>),</span>
+<span id="cb2-31"><a href="#cb2-31" aria-hidden="true" tabindex="-1"></a>      <span class="st">"| LogLoss:"</span>, <span class="fu">round</span>(<span class="fu">logloss</span>(y_te, p_te), <span class="dv">4</span>))</span>
+<span id="cb2-32"><a href="#cb2-32" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb2-33"><a href="#cb2-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-34"><a href="#cb2-34" aria-hidden="true" tabindex="-1"></a><span class="co"># mirror ESPN full-court x (0..100) into single attacking half (0..50)</span></span>
+<span id="cb2-35"><a href="#cb2-35" aria-hidden="true" tabindex="-1"></a>to_halfcourt <span class="ot">&lt;-</span> <span class="cf">function</span>(x, y) <span class="fu">tibble</span>(<span class="at">x =</span> <span class="fu">ifelse</span>(x <span class="sc">&gt;</span> <span class="dv">50</span>, <span class="dv">100</span> <span class="sc">-</span> x, x), <span class="at">y =</span> y)</span>
+<span id="cb2-36"><a href="#cb2-36" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-37"><a href="#cb2-37" aria-hidden="true" tabindex="-1"></a>get_teams_for_season <span class="ot">&lt;-</span> <span class="cf">function</span>(season) {</span>
+<span id="cb2-38"><a href="#cb2-38" aria-hidden="true" tabindex="-1"></a>  pbp <span class="ot">&lt;-</span> hoopR<span class="sc">::</span><span class="fu">load_nba_pbp</span>(season) <span class="sc">%&gt;%</span> <span class="fu">clean_names</span>()</span>
+<span id="cb2-39"><a href="#cb2-39" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-40"><a href="#cb2-40" aria-hidden="true" tabindex="-1"></a>  home <span class="ot">&lt;-</span> pbp <span class="sc">%&gt;%</span></span>
+<span id="cb2-41"><a href="#cb2-41" aria-hidden="true" tabindex="-1"></a>    <span class="fu">transmute</span>(</span>
+<span id="cb2-42"><a href="#cb2-42" aria-hidden="true" tabindex="-1"></a>      <span class="at">id  =</span> <span class="fu">as.integer</span>(home_team_id),</span>
+<span id="cb2-43"><a href="#cb2-43" aria-hidden="true" tabindex="-1"></a>      <span class="at">full_name =</span> home_team_name,</span>
+<span id="cb2-44"><a href="#cb2-44" aria-hidden="true" tabindex="-1"></a>      <span class="at">abbreviation =</span> home_team_abbrev,</span>
+<span id="cb2-45"><a href="#cb2-45" aria-hidden="true" tabindex="-1"></a>      <span class="at">season =</span> season</span>
+<span id="cb2-46"><a href="#cb2-46" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb2-47"><a href="#cb2-47" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-48"><a href="#cb2-48" aria-hidden="true" tabindex="-1"></a>  away <span class="ot">&lt;-</span> pbp <span class="sc">%&gt;%</span></span>
+<span id="cb2-49"><a href="#cb2-49" aria-hidden="true" tabindex="-1"></a>    <span class="fu">transmute</span>(</span>
+<span id="cb2-50"><a href="#cb2-50" aria-hidden="true" tabindex="-1"></a>      <span class="at">id  =</span> <span class="fu">as.integer</span>(away_team_id),</span>
+<span id="cb2-51"><a href="#cb2-51" aria-hidden="true" tabindex="-1"></a>      <span class="at">full_name =</span> away_team_name,</span>
+<span id="cb2-52"><a href="#cb2-52" aria-hidden="true" tabindex="-1"></a>      <span class="at">abbreviation =</span> away_team_abbrev,</span>
+<span id="cb2-53"><a href="#cb2-53" aria-hidden="true" tabindex="-1"></a>      <span class="at">season =</span> season</span>
+<span id="cb2-54"><a href="#cb2-54" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb2-55"><a href="#cb2-55" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-56"><a href="#cb2-56" aria-hidden="true" tabindex="-1"></a>  <span class="fu">bind_rows</span>(home, away) <span class="sc">%&gt;%</span></span>
+<span id="cb2-57"><a href="#cb2-57" aria-hidden="true" tabindex="-1"></a>    <span class="fu">filter</span>(<span class="sc">!</span><span class="fu">is.na</span>(id), <span class="sc">!</span><span class="fu">is.na</span>(full_name), full_name <span class="sc">!=</span> <span class="st">""</span>) <span class="sc">%&gt;%</span></span>
+<span id="cb2-58"><a href="#cb2-58" aria-hidden="true" tabindex="-1"></a>    <span class="fu">distinct</span>(id, full_name, abbreviation, season) <span class="sc">%&gt;%</span></span>
+<span id="cb2-59"><a href="#cb2-59" aria-hidden="true" tabindex="-1"></a>    <span class="fu">arrange</span>(id)</span>
+<span id="cb2-60"><a href="#cb2-60" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb2-61"><a href="#cb2-61" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-62"><a href="#cb2-62" aria-hidden="true" tabindex="-1"></a>teams <span class="ot">&lt;-</span> purrr<span class="sc">::</span><span class="fu">map_df</span>(SEASONS, get_teams_for_season)</span>
+<span id="cb2-63"><a href="#cb2-63" aria-hidden="true" tabindex="-1"></a>sequences <span class="ot">=</span> readr<span class="sc">::</span><span class="fu">read_csv</span>(<span class="st">'./data/ALL_SEQUENCES_2024.csv'</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+</div>
+</div>
 </section>
 <section id="creating-expected-possession-value-models" class="level2">
 <h2 class="anchored" data-anchor-id="creating-expected-possession-value-models">Creating Expected Possession Value Models</h2>
-<section id="laplace-smoothing" class="level3">
-<h3 class="anchored" data-anchor-id="laplace-smoothing">Laplace Smoothing</h3>
+<section id="estimated-value-added-for-play-initiation-with-laplace-smoothing" class="level3">
+<h3 class="anchored" data-anchor-id="estimated-value-added-for-play-initiation-with-laplace-smoothing">Estimated Value Added for Play Initiation with Laplace Smoothing</h3>
+<p>To get a baseline for an <u>estimated point value</u> (EPV) at the beginning of a sequence of play, whether that’s off of a rebound, an inbound, or a turnover, the previous season’s PBP data was used to derive the EPV of each initiating action.</p>
+<p>In order to begin this assessment, NBA PBP data was sourced, parsed, and reformatted as detailed below.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb3"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>cand <span class="ot">&lt;-</span> hoopR<span class="sc">::</span><span class="fu">most_recent_nba_season</span>()</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>candidate_seasons <span class="ot">&lt;-</span> <span class="fu">c</span>(cand <span class="sc">-</span> <span class="dv">1</span>L, cand)  <span class="co"># eg try 2024 first, then 2025 -&gt; this is to get the latest season</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="co"># returns NULL if the call errors or returns an empty frame. this avoids hard stops if a season isnt available</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>load_one <span class="ot">&lt;-</span> <span class="cf">function</span>(s) {</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>  out <span class="ot">&lt;-</span> <span class="fu">try</span>(hoopR<span class="sc">::</span><span class="fu">load_nba_pbp</span>(<span class="at">seasons =</span> s) <span class="sc">%&gt;%</span> janitor<span class="sc">::</span><span class="fu">clean_names</span>(), <span class="at">silent =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span> (<span class="fu">inherits</span>(out, <span class="st">"try-error"</span>)) <span class="fu">return</span>(<span class="cn">NULL</span>)</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span> (<span class="sc">!</span><span class="fu">is.data.frame</span>(out) <span class="sc">||</span> <span class="fu">nrow</span>(out) <span class="sc">==</span> <span class="dv">0</span>) <span class="fu">return</span>(<span class="cn">NULL</span>)</span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>  out</span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a><span class="co"># keeps first non empty results as pbp_raw</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>pbp_raw <span class="ot">&lt;-</span> <span class="cn">NULL</span>; season_used <span class="ot">&lt;-</span> <span class="cn">NA_integer_</span></span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> (s <span class="cf">in</span> candidate_seasons) {</span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>  tmp <span class="ot">&lt;-</span> <span class="fu">load_one</span>(s)</span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span> (<span class="sc">!</span><span class="fu">is.null</span>(tmp)) { pbp_raw <span class="ot">&lt;-</span> tmp; season_used <span class="ot">&lt;-</span> s; <span class="cf">break</span> }</span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a><span class="fu">stopifnot</span>(<span class="sc">!</span><span class="fu">is.null</span>(pbp_raw), <span class="fu">nrow</span>(pbp_raw) <span class="sc">&gt;</span> <span class="dv">0</span>) <span class="co">#just ensures we load something</span></span>
+<span id="cb3-19"><a href="#cb3-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-20"><a href="#cb3-20" aria-hidden="true" tabindex="-1"></a><span class="co"># Normalization helpers (no mixedtype coalesce) </span></span>
+<span id="cb3-21"><a href="#cb3-21" aria-hidden="true" tabindex="-1"></a>safe_coalesce_chr <span class="ot">&lt;-</span> <span class="cf">function</span>(df, candidates) {</span>
+<span id="cb3-22"><a href="#cb3-22" aria-hidden="true" tabindex="-1"></a>  v <span class="ot">&lt;-</span> <span class="fu">rep</span>(<span class="cn">NA_character_</span>, <span class="fu">nrow</span>(df))</span>
+<span id="cb3-23"><a href="#cb3-23" aria-hidden="true" tabindex="-1"></a>  <span class="cf">for</span> (nm <span class="cf">in</span> candidates) {</span>
+<span id="cb3-24"><a href="#cb3-24" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> (nm <span class="sc">%in%</span> <span class="fu">names</span>(df)) {</span>
+<span id="cb3-25"><a href="#cb3-25" aria-hidden="true" tabindex="-1"></a>      src <span class="ot">&lt;-</span> df[[nm]]</span>
+<span id="cb3-26"><a href="#cb3-26" aria-hidden="true" tabindex="-1"></a>      csrc <span class="ot">&lt;-</span> <span class="fu">as.character</span>(src)</span>
+<span id="cb3-27"><a href="#cb3-27" aria-hidden="true" tabindex="-1"></a>      csrc[<span class="fu">is.na</span>(src)] <span class="ot">&lt;-</span> <span class="cn">NA_character_</span></span>
+<span id="cb3-28"><a href="#cb3-28" aria-hidden="true" tabindex="-1"></a>      v <span class="ot">&lt;-</span> <span class="fu">ifelse</span>(<span class="fu">is.na</span>(v) <span class="sc">|</span> v <span class="sc">==</span> <span class="st">""</span>, csrc, v)</span>
+<span id="cb3-29"><a href="#cb3-29" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb3-30"><a href="#cb3-30" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb3-31"><a href="#cb3-31" aria-hidden="true" tabindex="-1"></a>  v</span>
+<span id="cb3-32"><a href="#cb3-32" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb3-33"><a href="#cb3-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-34"><a href="#cb3-34" aria-hidden="true" tabindex="-1"></a><span class="co"># Build normalized vectors </span></span>
+<span id="cb3-35"><a href="#cb3-35" aria-hidden="true" tabindex="-1"></a>clock_vec <span class="ot">&lt;-</span> <span class="fu">safe_coalesce_chr</span>(pbp_raw, <span class="fu">c</span>(<span class="st">"clock_display_value"</span>,<span class="st">"clock"</span>))</span>
+<span id="cb3-36"><a href="#cb3-36" aria-hidden="true" tabindex="-1"></a>text_vec  <span class="ot">&lt;-</span> <span class="fu">safe_coalesce_chr</span>(pbp_raw, <span class="fu">c</span>(<span class="st">"text"</span>,<span class="st">"type_text"</span>,<span class="st">"play_text"</span>,<span class="st">"description"</span>))</span>
+<span id="cb3-37"><a href="#cb3-37" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-38"><a href="#cb3-38" aria-hidden="true" tabindex="-1"></a>coord_x <span class="ot">&lt;-</span> <span class="cf">if</span> (<span class="st">"coordinate_x"</span> <span class="sc">%in%</span> <span class="fu">names</span>(pbp_raw)) <span class="fu">suppressWarnings</span>(<span class="fu">as.numeric</span>(pbp_raw<span class="sc">$</span>coordinate_x)) <span class="cf">else</span> <span class="fu">rep</span>(<span class="cn">NA_real_</span>, <span class="fu">nrow</span>(pbp_raw))</span>
+<span id="cb3-39"><a href="#cb3-39" aria-hidden="true" tabindex="-1"></a>coord_y <span class="ot">&lt;-</span> <span class="cf">if</span> (<span class="st">"coordinate_y"</span> <span class="sc">%in%</span> <span class="fu">names</span>(pbp_raw)) <span class="fu">suppressWarnings</span>(<span class="fu">as.numeric</span>(pbp_raw<span class="sc">$</span>coordinate_y)) <span class="cf">else</span> <span class="fu">rep</span>(<span class="cn">NA_real_</span>, <span class="fu">nrow</span>(pbp_raw))</span>
+<span id="cb3-40"><a href="#cb3-40" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-41"><a href="#cb3-41" aria-hidden="true" tabindex="-1"></a>score_value_i <span class="ot">&lt;-</span> <span class="cf">if</span> (<span class="st">"score_value"</span> <span class="sc">%in%</span> <span class="fu">names</span>(pbp_raw)) <span class="fu">suppressWarnings</span>(<span class="fu">as.integer</span>(pbp_raw<span class="sc">$</span>score_value)) <span class="cf">else</span> <span class="fu">rep</span>(<span class="cn">NA_integer_</span>, <span class="fu">nrow</span>(pbp_raw))</span>
+<span id="cb3-42"><a href="#cb3-42" aria-hidden="true" tabindex="-1"></a>scoring_play_i <span class="ot">&lt;-</span> <span class="cf">if</span> (<span class="st">"scoring_play"</span> <span class="sc">%in%</span> <span class="fu">names</span>(pbp_raw)) <span class="fu">suppressWarnings</span>(<span class="fu">as.integer</span>(pbp_raw<span class="sc">$</span>scoring_play)) <span class="cf">else</span> <span class="fu">rep</span>(<span class="cn">NA_integer_</span>, <span class="fu">nrow</span>(pbp_raw))</span>
+<span id="cb3-43"><a href="#cb3-43" aria-hidden="true" tabindex="-1"></a>game_play_number_i  <span class="ot">&lt;-</span> <span class="cf">if</span> (<span class="st">"game_play_number"</span> <span class="sc">%in%</span> <span class="fu">names</span>(pbp_raw)) pbp_raw<span class="sc">$</span>game_play_number <span class="cf">else</span> <span class="fu">seq_len</span>(<span class="fu">nrow</span>(pbp_raw))</span>
+<span id="cb3-44"><a href="#cb3-44" aria-hidden="true" tabindex="-1"></a>team_id_chr <span class="ot">&lt;-</span> <span class="cf">if</span> (<span class="st">"team_id"</span> <span class="sc">%in%</span> <span class="fu">names</span>(pbp_raw)) <span class="fu">as.character</span>(pbp_raw<span class="sc">$</span>team_id) <span class="cf">else</span> <span class="fu">rep</span>(<span class="cn">NA_character_</span>, <span class="fu">nrow</span>(pbp_raw))</span>
+<span id="cb3-45"><a href="#cb3-45" aria-hidden="true" tabindex="-1"></a>home_score_i <span class="ot">&lt;-</span> <span class="cf">if</span> (<span class="st">"home_score"</span> <span class="sc">%in%</span> <span class="fu">names</span>(pbp_raw)) pbp_raw<span class="sc">$</span>home_score <span class="cf">else</span> <span class="fu">rep</span>(<span class="cn">NA_integer_</span>, <span class="fu">nrow</span>(pbp_raw))</span>
+<span id="cb3-46"><a href="#cb3-46" aria-hidden="true" tabindex="-1"></a>away_score_i <span class="ot">&lt;-</span> <span class="cf">if</span> (<span class="st">"away_score"</span> <span class="sc">%in%</span> <span class="fu">names</span>(pbp_raw)) pbp_raw<span class="sc">$</span>away_score <span class="cf">else</span> <span class="fu">rep</span>(<span class="cn">NA_integer_</span>, <span class="fu">nrow</span>(pbp_raw))</span>
+<span id="cb3-47"><a href="#cb3-47" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-48"><a href="#cb3-48" aria-hidden="true" tabindex="-1"></a><span class="co"># Final normalized PBP table for the season</span></span>
+<span id="cb3-49"><a href="#cb3-49" aria-hidden="true" tabindex="-1"></a>pbp <span class="ot">&lt;-</span> pbp_raw <span class="sc">%&gt;%</span></span>
+<span id="cb3-50"><a href="#cb3-50" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">mutate</span>(</span>
+<span id="cb3-51"><a href="#cb3-51" aria-hidden="true" tabindex="-1"></a>    <span class="at">game_id =</span> <span class="fu">as.character</span>(game_id),</span>
+<span id="cb3-52"><a href="#cb3-52" aria-hidden="true" tabindex="-1"></a>    <span class="at">period =</span> pbp_raw<span class="sc">$</span>period,</span>
+<span id="cb3-53"><a href="#cb3-53" aria-hidden="true" tabindex="-1"></a>    <span class="at">clock =</span> clock_vec,</span>
+<span id="cb3-54"><a href="#cb3-54" aria-hidden="true" tabindex="-1"></a>    <span class="at">text =</span> text_vec,</span>
+<span id="cb3-55"><a href="#cb3-55" aria-hidden="true" tabindex="-1"></a>    <span class="at">team_id =</span> team_id_chr,</span>
+<span id="cb3-56"><a href="#cb3-56" aria-hidden="true" tabindex="-1"></a>    <span class="at">home_score =</span> home_score_i,</span>
+<span id="cb3-57"><a href="#cb3-57" aria-hidden="true" tabindex="-1"></a>    <span class="at">away_score =</span> away_score_i,</span>
+<span id="cb3-58"><a href="#cb3-58" aria-hidden="true" tabindex="-1"></a>    <span class="at">coordinate_x =</span> coord_x,</span>
+<span id="cb3-59"><a href="#cb3-59" aria-hidden="true" tabindex="-1"></a>    <span class="at">coordinate_y =</span> coord_y,</span>
+<span id="cb3-60"><a href="#cb3-60" aria-hidden="true" tabindex="-1"></a>    <span class="at">score_value =</span> score_value_i,</span>
+<span id="cb3-61"><a href="#cb3-61" aria-hidden="true" tabindex="-1"></a>    <span class="at">scoring_play =</span> scoring_play_i,</span>
+<span id="cb3-62"><a href="#cb3-62" aria-hidden="true" tabindex="-1"></a>    <span class="at">game_play_number =</span> game_play_number_i</span>
+<span id="cb3-63"><a href="#cb3-63" aria-hidden="true" tabindex="-1"></a>  ) <span class="sc">%&gt;%</span></span>
+<span id="cb3-64"><a href="#cb3-64" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">select</span>(game_id, period, clock, text, team_id, home_score, away_score,</span>
+<span id="cb3-65"><a href="#cb3-65" aria-hidden="true" tabindex="-1"></a>                coordinate_x, coordinate_y, score_value, scoring_play, game_play_number) <span class="sc">%&gt;%</span></span>
+<span id="cb3-66"><a href="#cb3-66" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">arrange</span>(game_id, game_play_number)</span>
+<span id="cb3-67"><a href="#cb3-67" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-68"><a href="#cb3-68" aria-hidden="true" tabindex="-1"></a><span class="co"># Sanity check</span></span>
+<span id="cb3-69"><a href="#cb3-69" aria-hidden="true" tabindex="-1"></a><span class="fu">list</span>(</span>
+<span id="cb3-70"><a href="#cb3-70" aria-hidden="true" tabindex="-1"></a>  <span class="at">season_used=</span> season_used,</span>
+<span id="cb3-71"><a href="#cb3-71" aria-hidden="true" tabindex="-1"></a>  <span class="at">total_rows =</span> <span class="fu">nrow</span>(pbp),</span>
+<span id="cb3-72"><a href="#cb3-72" aria-hidden="true" tabindex="-1"></a>  <span class="at">unique_games =</span> dplyr<span class="sc">::</span><span class="fu">n_distinct</span>(pbp<span class="sc">$</span>game_id),</span>
+<span id="cb3-73"><a href="#cb3-73" aria-hidden="true" tabindex="-1"></a>  <span class="at">rows_with_coords =</span> <span class="fu">sum</span>(<span class="sc">!</span><span class="fu">is.na</span>(pbp<span class="sc">$</span>coordinate_x) <span class="sc">&amp;</span> <span class="sc">!</span><span class="fu">is.na</span>(pbp<span class="sc">$</span>coordinate_y))</span>
+<span id="cb3-74"><a href="#cb3-74" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>$season_used
+[1] 2025
+
+$total_rows
+[1] 620185
+
+$unique_games
+[1] 1314
+
+$rows_with_coords
+[1] 620185</code></pre>
+</div>
+</div>
+<p>With this PBP data, starting context from a shot was reverse engineered to determine how the underlying sequence was initiated.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>shots <span class="ot">&lt;-</span> pbp <span class="sc">%&gt;%</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">filter</span>(<span class="sc">!</span><span class="fu">is.na</span>(coordinate_x), <span class="sc">!</span><span class="fu">is.na</span>(coordinate_y)) <span class="sc">%&gt;%</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">mutate</span>(</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>    <span class="at">tlow =</span> <span class="fu">tolower</span>(<span class="fu">ifelse</span>(<span class="fu">is.na</span>(text), <span class="st">""</span>, <span class="fu">as.character</span>(text)))</span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>  ) <span class="sc">%&gt;%</span></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">filter</span>(</span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>    stringr<span class="sc">::</span><span class="fu">str_detect</span>(tlow, <span class="st">"makes|misses"</span>),</span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>    <span class="sc">!</span>stringr<span class="sc">::</span><span class="fu">str_detect</span>(tlow, <span class="st">"free throw"</span>)</span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>  ) <span class="sc">%&gt;%</span></span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">mutate</span>(</span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a>    <span class="at">is_three =</span> stringr<span class="sc">::</span><span class="fu">str_detect</span>(tlow, <span class="st">"3[- ]?pt|three"</span>),</span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a>    <span class="at">points_attempt =</span> dplyr<span class="sc">::</span><span class="fu">if_else</span>(is_three, <span class="dv">3</span>L, <span class="dv">2</span>L),</span>
+<span id="cb5-13"><a href="#cb5-13" aria-hidden="true" tabindex="-1"></a>    <span class="at">points_scored =</span> <span class="fu">nz</span>(dplyr<span class="sc">::</span><span class="fu">if_else</span>(scoring_play <span class="sc">==</span> <span class="dv">1</span>L, score_value, <span class="dv">0</span>L))</span>
+<span id="cb5-14"><a href="#cb5-14" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb5-15"><a href="#cb5-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-16"><a href="#cb5-16" aria-hidden="true" tabindex="-1"></a>shots_poss <span class="ot">&lt;-</span> shots <span class="sc">%&gt;%</span></span>
+<span id="cb5-17"><a href="#cb5-17" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">arrange</span>(game_id, game_play_number) <span class="sc">%&gt;%</span></span>
+<span id="cb5-18"><a href="#cb5-18" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">group_by</span>(game_id) <span class="sc">%&gt;%</span></span>
+<span id="cb5-19"><a href="#cb5-19" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">mutate</span>(</span>
+<span id="cb5-20"><a href="#cb5-20" aria-hidden="true" tabindex="-1"></a>    <span class="at">team_id_shot =</span> <span class="fu">as.character</span>(team_id),</span>
+<span id="cb5-21"><a href="#cb5-21" aria-hidden="true" tabindex="-1"></a>    <span class="at">prev_team =</span> dplyr<span class="sc">::</span><span class="fu">lag</span>(team_id_shot),</span>
+<span id="cb5-22"><a href="#cb5-22" aria-hidden="true" tabindex="-1"></a>    <span class="at">prev_points =</span> dplyr<span class="sc">::</span><span class="fu">lag</span>(points_scored),</span>
+<span id="cb5-23"><a href="#cb5-23" aria-hidden="true" tabindex="-1"></a>    <span class="at">same_team =</span> <span class="sc">!</span><span class="fu">is.na</span>(prev_team) <span class="sc">&amp;</span> team_id_shot <span class="sc">==</span> prev_team,</span>
+<span id="cb5-24"><a href="#cb5-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-25"><a href="#cb5-25" aria-hidden="true" tabindex="-1"></a>    <span class="at">start_ctx =</span> dplyr<span class="sc">::</span><span class="fu">case_when</span>(</span>
+<span id="cb5-26"><a href="#cb5-26" aria-hidden="true" tabindex="-1"></a>      <span class="fu">is.na</span>(prev_team) <span class="sc">~</span> <span class="st">"Start of Game"</span>,</span>
+<span id="cb5-27"><a href="#cb5-27" aria-hidden="true" tabindex="-1"></a>      prev_points <span class="sc">&gt;</span> <span class="dv">0</span> <span class="sc">~</span> <span class="st">"After Opp MAKE (inbound)"</span>, <span class="co"># after a make, possession flips</span></span>
+<span id="cb5-28"><a href="#cb5-28" aria-hidden="true" tabindex="-1"></a>      prev_points <span class="sc">==</span> <span class="dv">0</span> <span class="sc">&amp;</span> same_team <span class="sc">~</span> <span class="st">"Same Team (2nd chance)"</span>, <span class="co"># miss + off. rebound</span></span>
+<span id="cb5-29"><a href="#cb5-29" aria-hidden="true" tabindex="-1"></a>      prev_points <span class="sc">==</span> <span class="dv">0</span> <span class="sc">&amp;</span> <span class="sc">!</span>same_team <span class="sc">~</span> <span class="st">"After Opp MISS (def reb/transition)"</span>,  <span class="co"># miss + def. rebound</span></span>
+<span id="cb5-30"><a href="#cb5-30" aria-hidden="true" tabindex="-1"></a>      <span class="cn">TRUE</span> <span class="sc">~</span> <span class="st">"Unknown"</span></span>
+<span id="cb5-31"><a href="#cb5-31" aria-hidden="true" tabindex="-1"></a>    ),</span>
+<span id="cb5-32"><a href="#cb5-32" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-33"><a href="#cb5-33" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Possession proxy id: increment when shooting team changes</span></span>
+<span id="cb5-34"><a href="#cb5-34" aria-hidden="true" tabindex="-1"></a>    <span class="at">poss_id_shot =</span> <span class="fu">cumsum</span>(dplyr<span class="sc">::</span><span class="fu">row_number</span>() <span class="sc">==</span> <span class="dv">1</span>L <span class="sc">|</span></span>
+<span id="cb5-35"><a href="#cb5-35" aria-hidden="true" tabindex="-1"></a>                          team_id_shot <span class="sc">!=</span> dplyr<span class="sc">::</span><span class="fu">lag</span>(team_id_shot, <span class="at">default =</span> <span class="fu">first</span>(team_id_shot))),</span>
+<span id="cb5-36"><a href="#cb5-36" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-37"><a href="#cb5-37" aria-hidden="true" tabindex="-1"></a>    <span class="at">points_offense =</span> points_scored</span>
+<span id="cb5-38"><a href="#cb5-38" aria-hidden="true" tabindex="-1"></a>  ) <span class="sc">%&gt;%</span></span>
+<span id="cb5-39"><a href="#cb5-39" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">ungroup</span>()</span>
+<span id="cb5-40"><a href="#cb5-40" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-41"><a href="#cb5-41" aria-hidden="true" tabindex="-1"></a><span class="co"># Sanity checks</span></span>
+<span id="cb5-42"><a href="#cb5-42" aria-hidden="true" tabindex="-1"></a><span class="fu">list</span>(</span>
+<span id="cb5-43"><a href="#cb5-43" aria-hidden="true" tabindex="-1"></a>  <span class="at">n_possessions_shot =</span> <span class="fu">nrow</span>(shots_poss),</span>
+<span id="cb5-44"><a href="#cb5-44" aria-hidden="true" tabindex="-1"></a>  <span class="at">ppp_shot_only_fg =</span> <span class="fu">round</span>(<span class="fu">mean</span>(shots_poss<span class="sc">$</span>points_offense, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">3</span>)</span>
+<span id="cb5-45"><a href="#cb5-45" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>$n_possessions_shot
+[1] 220682
+
+$ppp_shot_only_fg
+[1] 1.147</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>shots_poss <span class="sc">%&gt;%</span> dplyr<span class="sc">::</span><span class="fu">count</span>(start_ctx, <span class="at">sort =</span> <span class="cn">TRUE</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 4 × 2
+  start_ctx                                n
+  &lt;chr&gt;                                &lt;int&gt;
+1 After Opp MAKE (inbound)            108371
+2 After Opp MISS (def reb/transition)  69444
+3 Same Team (2nd chance)               41553
+4 Start of Game                         1314</code></pre>
+</div>
+</div>
+<p>From aggregating and summarizing over each context, the following values are generated off of a sequence beginning with that specified context.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co"># count shots per context</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>ctx_counts <span class="ot">&lt;-</span> shots_poss <span class="sc">%&gt;%</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">count</span>(start_ctx, <span class="at">sort =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>ctx_counts</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 4 × 2
+  start_ctx                                n
+  &lt;chr&gt;                                &lt;int&gt;
+1 After Opp MAKE (inbound)            108371
+2 After Opp MISS (def reb/transition)  69444
+3 Same Team (2nd chance)               41553
+4 Start of Game                         1314</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb11"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="co"># EPV_start = mean points per shot-possession given the start context</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>epv_start_ctx <span class="ot">&lt;-</span> shots_poss <span class="sc">%&gt;%</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">group_by</span>(start_ctx) <span class="sc">%&gt;%</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">summarise</span>(</span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>    <span class="at">n_poss =</span> dplyr<span class="sc">::</span><span class="fu">n</span>(),</span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>    <span class="at">epv_start =</span> <span class="fu">mean</span>(points_offense, <span class="at">na.rm =</span> <span class="cn">TRUE</span>),</span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a>    <span class="at">.groups =</span> <span class="st">"drop"</span></span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>  ) <span class="sc">%&gt;%</span></span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">arrange</span>(<span class="fu">desc</span>(epv_start))</span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a>epv_start_ctx</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 4 × 3
+  start_ctx                           n_poss epv_start
+  &lt;chr&gt;                                &lt;int&gt;     &lt;dbl&gt;
+1 Same Team (2nd chance)               41553      1.18
+2 After Opp MISS (def reb/transition)  69444      1.16
+3 After Opp MAKE (inbound)            108371      1.13
+4 Start of Game                         1314      1.08</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb13"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Quick bar chart</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>ggplot2<span class="sc">::</span><span class="fu">ggplot</span>(epv_start_ctx, ggplot2<span class="sc">::</span><span class="fu">aes</span>(<span class="fu">reorder</span>(start_ctx, epv_start), epv_start)) <span class="sc">+</span></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>  ggplot2<span class="sc">::</span><span class="fu">geom_col</span>() <span class="sc">+</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>  ggplot2<span class="sc">::</span><span class="fu">coord_flip</span>() <span class="sc">+</span></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>  ggplot2<span class="sc">::</span><span class="fu">labs</span>(<span class="at">title =</span> <span class="st">"EPV at Possession Start (by start context)"</span>,</span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>                <span class="at">x =</span> <span class="cn">NULL</span>, <span class="at">y =</span> <span class="st">"Expected Points per Shot-Possession"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<div>
+<figure class="figure">
+<p><img src="Report_files/figure-html/unnamed-chunk-4-1.png" class="img-fluid figure-img" width="672"></p>
+</figure>
+</div>
+</div>
+</div>
+<p>The results of this modelling approach are rather intuitive. A sequence beginning off of a second-chance play, typically an offensive rebound, generated the most EPV per possession. Further, the EPV of closely related actions, like rebounds, inbound plays, and tip-offs do not drastically deviate. As a whole, this approach lays the foundation for further analysis including other attributes of a starting action, such as location information and other contexts (turnovers, etc.).</p>
 </section>
-<section id="random-forest" class="level3">
-<h3 class="anchored" data-anchor-id="random-forest">Random Forest</h3>
+<section id="deriving-xpts-with-laplace-smoothing-and-random-forest-approaches" class="level3">
+<h3 class="anchored" data-anchor-id="deriving-xpts-with-laplace-smoothing-and-random-forest-approaches">Deriving XPts with Laplace Smoothing and Random Forest Approaches</h3>
+<p>In order to estimate the value of a shot given its location, two approaches were identified: a Bayesian conditional probability approach leveraging binning based on shot location with Laplace smoothing, and a Random Forest classifer.</p>
+<p>With the Laplace Smoothing approach, we can determine a foundation for areas of the court that optimize a shot’s value. Rather intuitively, this tends to skew toward shots closer to the basket, while some grids close to half-court were identified as having a high EP/FGA. These cases are likely due to a relative small amount of shot attempts within those bins, with a relatively high amount of successful events.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb14"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Filter to field-goal attempts with coordinates (exclude free throws)</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>shots <span class="ot">&lt;-</span> pbp <span class="sc">%&gt;%</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">filter</span>(<span class="sc">!</span><span class="fu">is.na</span>(coordinate_x), <span class="sc">!</span><span class="fu">is.na</span>(coordinate_y)) <span class="sc">%&gt;%</span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">mutate</span>(</span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>    <span class="at">tlow =</span> <span class="fu">tolower</span>(<span class="fu">ifelse</span>(<span class="fu">is.na</span>(text), <span class="st">""</span>, <span class="fu">as.character</span>(text)))</span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a>  ) <span class="sc">%&gt;%</span></span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">filter</span>(</span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a>    stringr<span class="sc">::</span><span class="fu">str_detect</span>(tlow, <span class="st">"makes|misses"</span>),</span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a>    <span class="sc">!</span>stringr<span class="sc">::</span><span class="fu">str_detect</span>(tlow, <span class="st">"free throw"</span>)</span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a>  ) <span class="sc">%&gt;%</span></span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">mutate</span>(</span>
+<span id="cb14-12"><a href="#cb14-12" aria-hidden="true" tabindex="-1"></a>    <span class="at">is_three =</span> stringr<span class="sc">::</span><span class="fu">str_detect</span>(tlow, <span class="st">"3[- ]?pt|three"</span>),</span>
+<span id="cb14-13"><a href="#cb14-13" aria-hidden="true" tabindex="-1"></a>    <span class="at">points_attempt =</span> dplyr<span class="sc">::</span><span class="fu">if_else</span>(is_three, <span class="dv">3</span>L, <span class="dv">2</span>L),</span>
+<span id="cb14-14"><a href="#cb14-14" aria-hidden="true" tabindex="-1"></a>    <span class="at">points_scored =</span> <span class="fu">nz</span>(dplyr<span class="sc">::</span><span class="fu">if_else</span>(scoring_play <span class="sc">==</span> <span class="dv">1</span>L, score_value, <span class="dv">0</span>L))</span>
+<span id="cb14-15"><a href="#cb14-15" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb14-16"><a href="#cb14-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-17"><a href="#cb14-17" aria-hidden="true" tabindex="-1"></a><span class="co"># Mirror full court to a single attacking half and bin into a coarse grid</span></span>
+<span id="cb14-18"><a href="#cb14-18" aria-hidden="true" tabindex="-1"></a>GRID_NX <span class="ot">&lt;-</span> <span class="dv">20</span>; GRID_NY <span class="ot">&lt;-</span> <span class="dv">14</span></span>
+<span id="cb14-19"><a href="#cb14-19" aria-hidden="true" tabindex="-1"></a>hc <span class="ot">&lt;-</span> <span class="fu">to_halfcourt</span>(shots<span class="sc">$</span>coordinate_x, shots<span class="sc">$</span>coordinate_y)</span>
+<span id="cb14-20"><a href="#cb14-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-21"><a href="#cb14-21" aria-hidden="true" tabindex="-1"></a>shots <span class="ot">&lt;-</span> dplyr<span class="sc">::</span><span class="fu">bind_cols</span>(shots, hc) <span class="sc">%&gt;%</span></span>
+<span id="cb14-22"><a href="#cb14-22" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">mutate</span>(</span>
+<span id="cb14-23"><a href="#cb14-23" aria-hidden="true" tabindex="-1"></a>    <span class="at">gx =</span> <span class="fu">cut</span>(x, <span class="at">breaks =</span> <span class="fu">seq</span>(<span class="dv">0</span>, <span class="dv">50</span>, <span class="at">length.out =</span> GRID_NX <span class="sc">+</span> <span class="dv">1</span>), <span class="at">labels =</span> <span class="cn">FALSE</span>, <span class="at">include.lowest =</span> <span class="cn">TRUE</span>),</span>
+<span id="cb14-24"><a href="#cb14-24" aria-hidden="true" tabindex="-1"></a>    <span class="at">gy =</span> <span class="fu">cut</span>(y, <span class="at">breaks =</span> <span class="fu">seq</span>(<span class="dv">0</span>, <span class="dv">50</span>, <span class="at">length.out =</span> GRID_NY <span class="sc">+</span> <span class="dv">1</span>), <span class="at">labels =</span> <span class="cn">FALSE</span>, <span class="at">include.lowest =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb14-25"><a href="#cb14-25" aria-hidden="true" tabindex="-1"></a>  ) <span class="sc">%&gt;%</span></span>
+<span id="cb14-26"><a href="#cb14-26" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">filter</span>(<span class="sc">!</span><span class="fu">is.na</span>(gx), <span class="sc">!</span><span class="fu">is.na</span>(gy))</span>
+<span id="cb14-27"><a href="#cb14-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-28"><a href="#cb14-28" aria-hidden="true" tabindex="-1"></a><span class="co"># Global expected points per FGA (baseline prior)</span></span>
+<span id="cb14-29"><a href="#cb14-29" aria-hidden="true" tabindex="-1"></a>global_ep_fga <span class="ot">&lt;-</span> <span class="fu">sum</span>(shots<span class="sc">$</span>points_scored, <span class="at">na.rm =</span> <span class="cn">TRUE</span>) <span class="sc">/</span> <span class="fu">nrow</span>(shots)</span>
+<span id="cb14-30"><a href="#cb14-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-31"><a href="#cb14-31" aria-hidden="true" tabindex="-1"></a><span class="co"># Laplace smoothing toward the global prior</span></span>
+<span id="cb14-32"><a href="#cb14-32" aria-hidden="true" tabindex="-1"></a>LAPLACE <span class="ot">&lt;-</span> <span class="dv">150</span></span>
+<span id="cb14-33"><a href="#cb14-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-34"><a href="#cb14-34" aria-hidden="true" tabindex="-1"></a>cell <span class="ot">&lt;-</span> shots <span class="sc">%&gt;%</span></span>
+<span id="cb14-35"><a href="#cb14-35" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">group_by</span>(gx, gy) <span class="sc">%&gt;%</span></span>
+<span id="cb14-36"><a href="#cb14-36" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">summarise</span>(</span>
+<span id="cb14-37"><a href="#cb14-37" aria-hidden="true" tabindex="-1"></a>    <span class="at">fga =</span> dplyr<span class="sc">::</span><span class="fu">n</span>(),</span>
+<span id="cb14-38"><a href="#cb14-38" aria-hidden="true" tabindex="-1"></a>    <span class="at">pts =</span> <span class="fu">sum</span>(points_scored),</span>
+<span id="cb14-39"><a href="#cb14-39" aria-hidden="true" tabindex="-1"></a>    <span class="at">ep_fga_raw =</span> pts <span class="sc">/</span> fga,</span>
+<span id="cb14-40"><a href="#cb14-40" aria-hidden="true" tabindex="-1"></a>    <span class="at">.groups =</span> <span class="st">"drop"</span></span>
+<span id="cb14-41"><a href="#cb14-41" aria-hidden="true" tabindex="-1"></a>  ) <span class="sc">%&gt;%</span></span>
+<span id="cb14-42"><a href="#cb14-42" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">mutate</span>(</span>
+<span id="cb14-43"><a href="#cb14-43" aria-hidden="true" tabindex="-1"></a>    <span class="at">ep_fga =</span> (pts <span class="sc">+</span> LAPLACE <span class="sc">*</span> global_ep_fga) <span class="sc">/</span> (fga <span class="sc">+</span> LAPLACE)</span>
+<span id="cb14-44"><a href="#cb14-44" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb14-45"><a href="#cb14-45" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-46"><a href="#cb14-46" aria-hidden="true" tabindex="-1"></a><span class="co"># Quick report and heatmap</span></span>
+<span id="cb14-47"><a href="#cb14-47" aria-hidden="true" tabindex="-1"></a><span class="fu">list</span>(</span>
+<span id="cb14-48"><a href="#cb14-48" aria-hidden="true" tabindex="-1"></a>  <span class="at">n_shots =</span> <span class="fu">nrow</span>(shots),</span>
+<span id="cb14-49"><a href="#cb14-49" aria-hidden="true" tabindex="-1"></a>  <span class="at">grid_cells =</span> <span class="fu">nrow</span>(cell),</span>
+<span id="cb14-50"><a href="#cb14-50" aria-hidden="true" tabindex="-1"></a>  <span class="at">global_ep_fga =</span> <span class="fu">round</span>(global_ep_fga, <span class="dv">3</span>)</span>
+<span id="cb14-51"><a href="#cb14-51" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>$n_shots
+[1] 60459
+
+$grid_cells
+[1] 128
+
+$global_ep_fga
+[1] 1.18</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb16"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a>cell <span class="sc">%&gt;%</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>  ggplot2<span class="sc">::</span><span class="fu">ggplot</span>(ggplot2<span class="sc">::</span><span class="fu">aes</span>(gx, gy, <span class="at">fill =</span> ep_fga)) <span class="sc">+</span></span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>  ggplot2<span class="sc">::</span><span class="fu">geom_tile</span>() <span class="sc">+</span></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>  ggplot2<span class="sc">::</span><span class="fu">coord_fixed</span>() <span class="sc">+</span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a>  ggplot2<span class="sc">::</span><span class="fu">scale_fill_viridis_c</span>(<span class="at">name =</span> <span class="st">"EP/FGA"</span>) <span class="sc">+</span></span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>  ggplot2<span class="sc">::</span><span class="fu">labs</span>(</span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>    <span class="at">title =</span> <span class="st">"Shot Value Surface (EP per FGA, Laplace-smoothed)"</span>,</span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a>    <span class="at">x =</span> <span class="st">"Court X bin → (halfcourt)"</span>, </span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a>    <span class="at">y =</span> <span class="st">"Court Y bin ↑"</span></span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a>  )</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<div>
+<figure class="figure">
+<p><img src="Report_files/figure-html/unnamed-chunk-5-1.png" class="img-fluid figure-img" width="672"></p>
+</figure>
+</div>
+</div>
+</div>
+<p>This approach can be used to underlie the intuition of a regression task to utilize detailed shot information such as coordinate placement, the angle to the basket, and indicators for shot-related attributes to estimate the probability of a successful shot. Given the high-dimensional aspect of this dataset, this regression task was modeled using a Random Forest.</p>
+<p>To start, the PBP data must be reconstructed to define indicators for shot zones and types (TPA, FT, mid range) and computed attributes, like shot angles.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb17"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a>pbp <span class="ot">&lt;-</span> purrr<span class="sc">::</span><span class="fu">map_df</span>(SEASONS, <span class="sc">~</span> hoopR<span class="sc">::</span><span class="fu">load_nba_pbp</span>(.x)) <span class="sc">%&gt;%</span> <span class="fu">clean_names</span>()</span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a><span class="co"># Keep only field-goal shot attempts (exclude FTs), and keep ESPN shot coords</span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a>pbp <span class="ot">&lt;-</span> pbp <span class="sc">%&gt;%</span></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a>  <span class="fu">mutate</span>(</span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a>    <span class="at">txt =</span> <span class="fu">tolower</span>(<span class="fu">coalesce</span>(type_text, text)),</span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a>    <span class="at">is_ft =</span> <span class="fu">str_detect</span>(txt, <span class="st">"free throw"</span>)</span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a>shots <span class="ot">&lt;-</span> pbp <span class="sc">%&gt;%</span></span>
+<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a>  <span class="fu">filter</span>(shooting_play <span class="sc">==</span> <span class="cn">TRUE</span>, <span class="sc">!</span>is_ft) <span class="sc">%&gt;%</span></span>
+<span id="cb17-12"><a href="#cb17-12" aria-hidden="true" tabindex="-1"></a>  <span class="fu">transmute</span>(</span>
+<span id="cb17-13"><a href="#cb17-13" aria-hidden="true" tabindex="-1"></a>    season,</span>
+<span id="cb17-14"><a href="#cb17-14" aria-hidden="true" tabindex="-1"></a>    game_id,</span>
+<span id="cb17-15"><a href="#cb17-15" aria-hidden="true" tabindex="-1"></a>    <span class="at">game_event_id =</span> id,                <span class="co"># ESPN event id</span></span>
+<span id="cb17-16"><a href="#cb17-16" aria-hidden="true" tabindex="-1"></a>    team_id,</span>
+<span id="cb17-17"><a href="#cb17-17" aria-hidden="true" tabindex="-1"></a>    <span class="at">player_id =</span> athlete_id_1,          <span class="co"># shooter (may be NA for some events)</span></span>
+<span id="cb17-18"><a href="#cb17-18" aria-hidden="true" tabindex="-1"></a>    <span class="at">period =</span> <span class="fu">coalesce</span>(period, period_number),</span>
+<span id="cb17-19"><a href="#cb17-19" aria-hidden="true" tabindex="-1"></a>    <span class="at">clock_min =</span> clock_minutes,</span>
+<span id="cb17-20"><a href="#cb17-20" aria-hidden="true" tabindex="-1"></a>    <span class="at">clock_sec =</span> clock_seconds,</span>
+<span id="cb17-21"><a href="#cb17-21" aria-hidden="true" tabindex="-1"></a>    <span class="co"># outcome &amp; value</span></span>
+<span id="cb17-22"><a href="#cb17-22" aria-hidden="true" tabindex="-1"></a>    <span class="at">made =</span> <span class="fu">as.integer</span>(score_value <span class="sc">&gt;</span> <span class="dv">0</span>),  <span class="co"># for FGA, 2/3 on makes, 0 on misses</span></span>
+<span id="cb17-23"><a href="#cb17-23" aria-hidden="true" tabindex="-1"></a>    <span class="at">is_three =</span> <span class="fu">case_when</span>(</span>
+<span id="cb17-24"><a href="#cb17-24" aria-hidden="true" tabindex="-1"></a>      <span class="fu">str_detect</span>(<span class="fu">tolower</span>(text), <span class="st">"three"</span>) <span class="sc">~</span> <span class="dv">1</span>,</span>
+<span id="cb17-25"><a href="#cb17-25" aria-hidden="true" tabindex="-1"></a>      <span class="at">.default =</span> <span class="dv">0</span></span>
+<span id="cb17-26"><a href="#cb17-26" aria-hidden="true" tabindex="-1"></a>    ),</span>
+<span id="cb17-27"><a href="#cb17-27" aria-hidden="true" tabindex="-1"></a>    <span class="at">shot_value =</span> <span class="fu">case_when</span>(</span>
+<span id="cb17-28"><a href="#cb17-28" aria-hidden="true" tabindex="-1"></a>      is_three <span class="sc">==</span> <span class="dv">1</span> <span class="sc">~</span> <span class="dv">3</span>,</span>
+<span id="cb17-29"><a href="#cb17-29" aria-hidden="true" tabindex="-1"></a>      is_ft <span class="sc">~</span> <span class="dv">1</span>,</span>
+<span id="cb17-30"><a href="#cb17-30" aria-hidden="true" tabindex="-1"></a>      <span class="at">.default =</span> <span class="dv">2</span></span>
+<span id="cb17-31"><a href="#cb17-31" aria-hidden="true" tabindex="-1"></a>    ),</span>
+<span id="cb17-32"><a href="#cb17-32" aria-hidden="true" tabindex="-1"></a>    <span class="co"># location (ESPN coords already provided in PBP)</span></span>
+<span id="cb17-33"><a href="#cb17-33" aria-hidden="true" tabindex="-1"></a>    <span class="at">x_raw =</span> <span class="fu">as.numeric</span>(coordinate_x),</span>
+<span id="cb17-34"><a href="#cb17-34" aria-hidden="true" tabindex="-1"></a>    <span class="at">y_raw =</span> <span class="fu">as.numeric</span>(coordinate_y),</span>
+<span id="cb17-35"><a href="#cb17-35" aria-hidden="true" tabindex="-1"></a>    <span class="co"># optional game context you might want later</span></span>
+<span id="cb17-36"><a href="#cb17-36" aria-hidden="true" tabindex="-1"></a>    <span class="at">home_score =</span> <span class="fu">as.integer</span>(home_score),</span>
+<span id="cb17-37"><a href="#cb17-37" aria-hidden="true" tabindex="-1"></a>    <span class="at">away_score =</span> <span class="fu">as.integer</span>(away_score)</span>
+<span id="cb17-38"><a href="#cb17-38" aria-hidden="true" tabindex="-1"></a>  ) <span class="sc">%&gt;%</span></span>
+<span id="cb17-39"><a href="#cb17-39" aria-hidden="true" tabindex="-1"></a>  <span class="fu">filter</span>(<span class="sc">!</span><span class="fu">is.na</span>(x_raw), <span class="sc">!</span><span class="fu">is.na</span>(y_raw), <span class="sc">!</span><span class="fu">is.na</span>(made))</span>
+<span id="cb17-40"><a href="#cb17-40" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-41"><a href="#cb17-41" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-42"><a href="#cb17-42" aria-hidden="true" tabindex="-1"></a>rng_x <span class="ot">&lt;-</span> <span class="fu">range</span>(shots<span class="sc">$</span>x_raw, <span class="at">na.rm =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb17-43"><a href="#cb17-43" aria-hidden="true" tabindex="-1"></a>rng_y <span class="ot">&lt;-</span> <span class="fu">range</span>(shots<span class="sc">$</span>y_raw, <span class="at">na.rm =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb17-44"><a href="#cb17-44" aria-hidden="true" tabindex="-1"></a>norm_xy <span class="ot">&lt;-</span> <span class="cf">function</span>(v, rng) (v <span class="sc">-</span> rng[<span class="dv">1</span>]) <span class="sc">/</span> (rng[<span class="dv">2</span>] <span class="sc">-</span> rng[<span class="dv">1</span>])</span>
+<span id="cb17-45"><a href="#cb17-45" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-46"><a href="#cb17-46" aria-hidden="true" tabindex="-1"></a><span class="co"># If your court is flipped vertically relative to the offensive hoop, set FLIP_Y &lt;- TRUE</span></span>
+<span id="cb17-47"><a href="#cb17-47" aria-hidden="true" tabindex="-1"></a>FLIP_Y <span class="ot">&lt;-</span> <span class="cn">FALSE</span></span>
+<span id="cb17-48"><a href="#cb17-48" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-49"><a href="#cb17-49" aria-hidden="true" tabindex="-1"></a>shots <span class="ot">&lt;-</span> shots <span class="sc">%&gt;%</span></span>
+<span id="cb17-50"><a href="#cb17-50" aria-hidden="true" tabindex="-1"></a>  <span class="fu">mutate</span>(</span>
+<span id="cb17-51"><a href="#cb17-51" aria-hidden="true" tabindex="-1"></a>    <span class="at">x01 =</span> <span class="fu">norm_xy</span>(x_raw, rng_x),</span>
+<span id="cb17-52"><a href="#cb17-52" aria-hidden="true" tabindex="-1"></a>    <span class="at">y01 =</span> <span class="fu">norm_xy</span>(y_raw, rng_y),</span>
+<span id="cb17-53"><a href="#cb17-53" aria-hidden="true" tabindex="-1"></a>    <span class="at">y01 =</span> <span class="cf">if</span> (FLIP_Y) <span class="dv">1</span> <span class="sc">-</span> y01 <span class="cf">else</span> y01,</span>
+<span id="cb17-54"><a href="#cb17-54" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Centered coords (0 at middle)</span></span>
+<span id="cb17-55"><a href="#cb17-55" aria-hidden="true" tabindex="-1"></a>    <span class="at">xc =</span> x01 <span class="sc">-</span> <span class="fl">0.5</span>,</span>
+<span id="cb17-56"><a href="#cb17-56" aria-hidden="true" tabindex="-1"></a>    <span class="at">yc =</span> y01 <span class="sc">-</span> <span class="fl">0.5</span>,</span>
+<span id="cb17-57"><a href="#cb17-57" aria-hidden="true" tabindex="-1"></a>    <span class="at">r  =</span> <span class="fu">sqrt</span>(xc<span class="sc">^</span><span class="dv">2</span> <span class="sc">+</span> yc<span class="sc">^</span><span class="dv">2</span>),</span>
+<span id="cb17-58"><a href="#cb17-58" aria-hidden="true" tabindex="-1"></a>    <span class="at">angle =</span> <span class="fu">atan2</span>(yc, xc),</span>
+<span id="cb17-59"><a href="#cb17-59" aria-hidden="true" tabindex="-1"></a>    <span class="at">angle_deg =</span> angle <span class="sc">*</span> <span class="dv">180</span><span class="sc">/</span>pi,</span>
+<span id="cb17-60"><a href="#cb17-60" aria-hidden="true" tabindex="-1"></a>    <span class="co"># coarse zones on normalized court</span></span>
+<span id="cb17-61"><a href="#cb17-61" aria-hidden="true" tabindex="-1"></a>    <span class="at">corner3 =</span> <span class="fu">as.integer</span>(is_three <span class="sc">==</span> <span class="dv">1</span>L <span class="sc">&amp;</span> <span class="fu">abs</span>(yc) <span class="sc">&lt;</span> <span class="fl">0.15</span> <span class="sc">&amp;</span> <span class="fu">abs</span>(xc) <span class="sc">&gt;</span> <span class="fl">0.40</span>),</span>
+<span id="cb17-62"><a href="#cb17-62" aria-hidden="true" tabindex="-1"></a>    <span class="at">above_break3 =</span> <span class="fu">as.integer</span>(is_three <span class="sc">==</span> <span class="dv">1</span>L <span class="sc">&amp;</span> <span class="sc">!</span>corner3),</span>
+<span id="cb17-63"><a href="#cb17-63" aria-hidden="true" tabindex="-1"></a>    <span class="at">paint =</span> <span class="fu">as.integer</span>(is_three <span class="sc">==</span> <span class="dv">0</span>L <span class="sc">&amp;</span> <span class="fu">abs</span>(xc) <span class="sc">&lt;</span> <span class="fl">0.16</span> <span class="sc">&amp;</span> yc <span class="sc">&lt;</span> <span class="fl">0.27</span>),</span>
+<span id="cb17-64"><a href="#cb17-64" aria-hidden="true" tabindex="-1"></a>    <span class="at">midrange =</span> <span class="fu">as.integer</span>(is_three <span class="sc">==</span> <span class="dv">0</span>L <span class="sc">&amp;</span> <span class="sc">!</span>paint),</span>
+<span id="cb17-65"><a href="#cb17-65" aria-hidden="true" tabindex="-1"></a>    <span class="at">period =</span> <span class="fu">factor</span>(period)</span>
+<span id="cb17-66"><a href="#cb17-66" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb17-67"><a href="#cb17-67" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-68"><a href="#cb17-68" aria-hidden="true" tabindex="-1"></a><span class="fu">set.seed</span>(<span class="dv">479</span>)</span>
+<span id="cb17-69"><a href="#cb17-69" aria-hidden="true" tabindex="-1"></a>game_split <span class="ot">&lt;-</span> shots <span class="sc">%&gt;%</span></span>
+<span id="cb17-70"><a href="#cb17-70" aria-hidden="true" tabindex="-1"></a>  <span class="fu">distinct</span>(game_id) <span class="sc">%&gt;%</span></span>
+<span id="cb17-71"><a href="#cb17-71" aria-hidden="true" tabindex="-1"></a>  <span class="fu">mutate</span>(<span class="at">split =</span> <span class="fu">sample</span>(<span class="fu">c</span>(<span class="st">"train"</span>,<span class="st">"test"</span>), <span class="fu">n</span>(), <span class="cn">TRUE</span>, <span class="fu">c</span>(<span class="fl">0.8</span>,<span class="fl">0.2</span>)))</span>
+<span id="cb17-72"><a href="#cb17-72" aria-hidden="true" tabindex="-1"></a>shots <span class="ot">&lt;-</span> shots <span class="sc">%&gt;%</span> <span class="fu">left_join</span>(game_split, <span class="at">by=</span><span class="st">"game_id"</span>)</span>
+<span id="cb17-73"><a href="#cb17-73" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-74"><a href="#cb17-74" aria-hidden="true" tabindex="-1"></a>d_train <span class="ot">&lt;-</span> shots <span class="sc">%&gt;%</span> <span class="fu">filter</span>(split<span class="sc">==</span><span class="st">"train"</span>)</span>
+<span id="cb17-75"><a href="#cb17-75" aria-hidden="true" tabindex="-1"></a>d_test  <span class="ot">&lt;-</span> shots <span class="sc">%&gt;%</span> <span class="fu">filter</span>(split<span class="sc">==</span><span class="st">"test"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p>With this, the Random Forest classifier can now be fitted on a training set of PBP data, and evaluated using Brier loss and log-loss on the testing set.</p>
+<div class="cell" data-result="false">
+<div class="sourceCode cell-code" id="cb18"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a>base_formula <span class="ot">&lt;-</span> <span class="fu">as.formula</span>(</span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>  <span class="st">"made ~ xc + yc + r + angle_deg + is_three + corner3 + above_break3 + paint + midrange + period"</span></span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a>rf_fit <span class="ot">&lt;-</span> <span class="fu">ranger</span>(</span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">formula =</span> base_formula,</span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">data =</span> d_train <span class="sc">%&gt;%</span> <span class="fu">mutate</span>(<span class="at">made =</span> <span class="fu">factor</span>(made, <span class="at">levels=</span><span class="fu">c</span>(<span class="dv">0</span>,<span class="dv">1</span>))),</span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">probability =</span> <span class="cn">TRUE</span>,</span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">num.trees =</span> <span class="dv">1200</span>,</span>
+<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a>  <span class="at">mtry =</span> <span class="dv">5</span>,</span>
+<span id="cb18-10"><a href="#cb18-10" aria-hidden="true" tabindex="-1"></a>  <span class="at">min.node.size =</span> <span class="dv">50</span>,</span>
+<span id="cb18-11"><a href="#cb18-11" aria-hidden="true" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">479</span></span>
+<span id="cb18-12"><a href="#cb18-12" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb18-13"><a href="#cb18-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-14"><a href="#cb18-14" aria-hidden="true" tabindex="-1"></a>rf_train_p <span class="ot">&lt;-</span> <span class="fu">predict</span>(rf_fit, <span class="at">data =</span> d_train)<span class="sc">$</span>predictions[, <span class="st">"1"</span>]</span>
+<span id="cb18-15"><a href="#cb18-15" aria-hidden="true" tabindex="-1"></a>rf_test_p  <span class="ot">&lt;-</span> <span class="fu">predict</span>(rf_fit, <span class="at">data =</span> d_test)<span class="sc">$</span>predictions[, <span class="st">"1"</span>]</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb19"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="co"># re-run summaries</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a><span class="fu">eval_model</span>(<span class="st">"RandomForest"</span>, d_train<span class="sc">$</span>made, rf_train_p, d_test<span class="sc">$</span>made, rf_test_p)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>
+=== RandomForest ===
+Train  Brier: 0.2234 | LogLoss: 0.637Test   Brier: 0.2323 | LogLoss: 0.6568</code></pre>
+</div>
+</div>
+<p>Now, the Random Forest classifer can be applied to each event, multipled by their respective shot type to get xPts, and aggregated by shooter to determine which players in the 2024 season had the greatest totals of xPts.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb21"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a>d_test_preds <span class="ot">&lt;-</span> d_test <span class="sc">%&gt;%</span></span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>  <span class="fu">mutate</span>(</span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>    <span class="at">xg_rf  =</span> rf_test_p,</span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a>    <span class="at">xep_rf  =</span> xg_rf  <span class="sc">*</span> shot_value</span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>  ) <span class="sc">%&gt;%</span></span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a>  <span class="fu">select</span>(season, game_id, game_event_id, team_id, player_id,</span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a>         period, x_raw, y_raw, xc, yc, made, is_three, shot_value,</span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a>         xg_rf, xep_rf)</span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a><span class="do">##write_csv(d_test_preds, file.path(OUT_DIR, "shots_xg_xep_pbp_test.csv"))</span></span>
+<span id="cb21-11"><a href="#cb21-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-12"><a href="#cb21-12" aria-hidden="true" tabindex="-1"></a><span class="co"># Player summaries (if shooter id is present)</span></span>
+<span id="cb21-13"><a href="#cb21-13" aria-hidden="true" tabindex="-1"></a>player_meta <span class="ot">&lt;-</span> pbp <span class="sc">%&gt;%</span></span>
+<span id="cb21-14"><a href="#cb21-14" aria-hidden="true" tabindex="-1"></a>  <span class="fu">filter</span>(shooting_play <span class="sc">==</span> <span class="cn">TRUE</span>, <span class="sc">!</span><span class="fu">is.na</span>(athlete_id_1), <span class="sc">!</span><span class="fu">is.na</span>(text)) <span class="sc">%&gt;%</span></span>
+<span id="cb21-15"><a href="#cb21-15" aria-hidden="true" tabindex="-1"></a>  <span class="fu">transmute</span>(</span>
+<span id="cb21-16"><a href="#cb21-16" aria-hidden="true" tabindex="-1"></a>    <span class="at">player_id   =</span> <span class="fu">as.integer</span>(athlete_id_1),</span>
+<span id="cb21-17"><a href="#cb21-17" aria-hidden="true" tabindex="-1"></a>    <span class="co"># grab first "Firstname Lastname" before 'makes/misses'</span></span>
+<span id="cb21-18"><a href="#cb21-18" aria-hidden="true" tabindex="-1"></a>    <span class="at">player_name =</span> <span class="fu">str_extract</span>(text, <span class="st">"^[A-Z][a-zA-Z</span><span class="sc">\\</span><span class="st">-'.]+</span><span class="sc">\\</span><span class="st">s[A-Z][a-zA-Z</span><span class="sc">\\</span><span class="st">-'.]+"</span>)</span>
+<span id="cb21-19"><a href="#cb21-19" aria-hidden="true" tabindex="-1"></a>  ) <span class="sc">%&gt;%</span></span>
+<span id="cb21-20"><a href="#cb21-20" aria-hidden="true" tabindex="-1"></a>  <span class="fu">filter</span>(<span class="sc">!</span><span class="fu">is.na</span>(player_name)) <span class="sc">%&gt;%</span></span>
+<span id="cb21-21"><a href="#cb21-21" aria-hidden="true" tabindex="-1"></a>  <span class="fu">mutate</span>(<span class="at">player_name =</span> <span class="fu">str_squish</span>(player_name)) <span class="sc">%&gt;%</span></span>
+<span id="cb21-22"><a href="#cb21-22" aria-hidden="true" tabindex="-1"></a>  <span class="fu">count</span>(player_id, player_name, <span class="at">sort =</span> <span class="cn">TRUE</span>) <span class="sc">%&gt;%</span></span>
+<span id="cb21-23"><a href="#cb21-23" aria-hidden="true" tabindex="-1"></a>  <span class="fu">group_by</span>(player_id) <span class="sc">%&gt;%</span> <span class="fu">slice_max</span>(n, <span class="at">n =</span> <span class="dv">1</span>, <span class="at">with_ties =</span> <span class="cn">FALSE</span>) <span class="sc">%&gt;%</span> <span class="fu">ungroup</span>() <span class="sc">%&gt;%</span></span>
+<span id="cb21-24"><a href="#cb21-24" aria-hidden="true" tabindex="-1"></a>  <span class="fu">select</span>(player_id, player_name)</span>
+<span id="cb21-25"><a href="#cb21-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-26"><a href="#cb21-26" aria-hidden="true" tabindex="-1"></a><span class="co"># make sure this table is per-player</span></span>
+<span id="cb21-27"><a href="#cb21-27" aria-hidden="true" tabindex="-1"></a>player_summary <span class="ot">&lt;-</span> d_test_preds <span class="sc">%&gt;%</span></span>
+<span id="cb21-28"><a href="#cb21-28" aria-hidden="true" tabindex="-1"></a>  <span class="fu">mutate</span>(<span class="at">player_id =</span> <span class="fu">as.integer</span>(player_id),</span>
+<span id="cb21-29"><a href="#cb21-29" aria-hidden="true" tabindex="-1"></a>         <span class="at">made_num  =</span> <span class="fu">as.numeric</span>(made) <span class="sc">-</span> <span class="dv">1</span>L) <span class="sc">%&gt;%</span>   <span class="co"># 0/1 for convenience</span></span>
+<span id="cb21-30"><a href="#cb21-30" aria-hidden="true" tabindex="-1"></a>  <span class="fu">filter</span>(<span class="sc">!</span><span class="fu">is.na</span>(player_id)) <span class="sc">%&gt;%</span></span>
+<span id="cb21-31"><a href="#cb21-31" aria-hidden="true" tabindex="-1"></a>  <span class="fu">group_by</span>(player_id) <span class="sc">%&gt;%</span></span>
+<span id="cb21-32"><a href="#cb21-32" aria-hidden="true" tabindex="-1"></a>  <span class="fu">summarise</span>(</span>
+<span id="cb21-33"><a href="#cb21-33" aria-hidden="true" tabindex="-1"></a>    <span class="at">attempts      =</span> <span class="fu">n</span>(),</span>
+<span id="cb21-34"><a href="#cb21-34" aria-hidden="true" tabindex="-1"></a>    <span class="at">make_rate     =</span> <span class="fu">mean</span>(made_num),</span>
+<span id="cb21-35"><a href="#cb21-35" aria-hidden="true" tabindex="-1"></a>    <span class="at">xg            =</span> <span class="fu">mean</span>(xg_rf),</span>
+<span id="cb21-36"><a href="#cb21-36" aria-hidden="true" tabindex="-1"></a>    <span class="at">xep           =</span> <span class="fu">mean</span>(xep_rf),</span>
+<span id="cb21-37"><a href="#cb21-37" aria-hidden="true" tabindex="-1"></a>    <span class="at">points_actual =</span> <span class="fu">sum</span>(<span class="fu">ifelse</span>(made <span class="sc">==</span> <span class="dv">1</span>, shot_value, <span class="dv">0</span>)),</span>
+<span id="cb21-38"><a href="#cb21-38" aria-hidden="true" tabindex="-1"></a>    <span class="at">xep_total     =</span> <span class="fu">sum</span>(xep_rf),</span>
+<span id="cb21-39"><a href="#cb21-39" aria-hidden="true" tabindex="-1"></a>    <span class="at">over_perf_pts =</span> points_actual <span class="sc">-</span> xep_total,</span>
+<span id="cb21-40"><a href="#cb21-40" aria-hidden="true" tabindex="-1"></a>    <span class="at">.groups =</span> <span class="st">"drop"</span></span>
+<span id="cb21-41"><a href="#cb21-41" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb21-42"><a href="#cb21-42" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-43"><a href="#cb21-43" aria-hidden="true" tabindex="-1"></a>player_summary_named <span class="ot">&lt;-</span> player_summary <span class="sc">%&gt;%</span></span>
+<span id="cb21-44"><a href="#cb21-44" aria-hidden="true" tabindex="-1"></a>  <span class="fu">left_join</span>(player_meta, <span class="at">by =</span> <span class="st">"player_id"</span>) <span class="sc">%&gt;%</span></span>
+<span id="cb21-45"><a href="#cb21-45" aria-hidden="true" tabindex="-1"></a>  <span class="fu">relocate</span>(player_name, <span class="at">.before =</span> player_id)</span>
+<span id="cb21-46"><a href="#cb21-46" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-47"><a href="#cb21-47" aria-hidden="true" tabindex="-1"></a>player_summary_named <span class="sc">%&gt;%</span></span>
+<span id="cb21-48"><a href="#cb21-48" aria-hidden="true" tabindex="-1"></a>  <span class="fu">arrange</span>(<span class="fu">desc</span>(xep_total)) <span class="sc">%&gt;%</span></span>
+<span id="cb21-49"><a href="#cb21-49" aria-hidden="true" tabindex="-1"></a>  <span class="fu">head</span>(<span class="dv">20</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 20 × 9
+   player_name  player_id attempts make_rate    xg   xep points_actual xep_total
+   &lt;chr&gt;            &lt;int&gt;    &lt;int&gt;     &lt;dbl&gt; &lt;dbl&gt; &lt;dbl&gt;         &lt;dbl&gt;     &lt;dbl&gt;
+ 1 Shai Gilgeo…   4278073      977    -0.477 0.482 1.03           1088     1009.
+ 2 Pascal Siak…   3149673      775    -0.489 0.493 1.07            858      829.
+ 3 Jalen Bruns…   3934672      738    -0.509 0.453 1.02            809      752.
+ 4 Jayson Tatum   4065648      718    -0.546 0.457 1.04            748      750.
+ 5 Jaylen Brown   3917376      692    -0.493 0.484 1.07            771      737.
+ 6 Anthony Edw…   4594268      694    -0.558 0.450 1.03            714      712.
+ 7 Karl-Anthon…   3136195      628    -0.489 0.503 1.12            718      704.
+ 8 De'Aaron Fox   4066259      679    -0.533 0.453 1.02            710      689.
+ 9 Jalen Green    4437244      632    -0.589 0.455 1.05            602      667.
+10 Jalen Willi…   4593803      633    -0.496 0.473 1.04            703      658.
+11 Giannis Ant…   3032977      548    -0.394 0.573 1.17            675      642.
+12 LeBron James      1966      590    -0.453 0.490 1.07            718      634.
+13 Franz Wagner   4566434      574    -0.535 0.491 1.08            581      621.
+14 Nikola Jokic   3112335      582    -0.462 0.493 1.05            664      614.
+15 Anthony Dav…      6583      552    -0.429 0.530 1.09            642      603.
+16 Tyrese Hali…   4396993      599    -0.554 0.421 0.999           633      598.
+17 Coby White     4395651      559    -0.549 0.451 1.07            597      596.
+18 DeMar DeRoz…      3978      617    -0.530 0.447 0.955           612      589.
+19 Domantas Sa…   3155942      509    -0.413 0.554 1.15            620      587.
+20 Paolo Banch…   4432573      558    -0.557 0.475 1.04            542      579.
+# ℹ 1 more variable: over_perf_pts &lt;dbl&gt;</code></pre>
+</div>
+</div>
 </section>
-<section id="xgboost" class="level3">
-<h3 class="anchored" data-anchor-id="xgboost">XGBoost</h3>
+<section id="combined-model-to-estimate-total-value-added-based-by-player" class="level3">
+<h3 class="anchored" data-anchor-id="combined-model-to-estimate-total-value-added-based-by-player">Combined Model to Estimate Total Value Added Based by Player</h3>
+<p>The following approach utilizes inspiration from the two described approaches to identifying EPV of a sequence based on the initiating action, along with determining the expected points of a shot given location data.</p>
+<p>Unlike the EPV approach above, this EPV approach leverages access to X and Y coordinate data to perform logistic regression with <code>glm</code> on a <em>success</em> attribute, which identifies if a sequence of play ended in a successful shot. Further, the starting (initiating) actions defined in the dataset diverge slightly from the previously identified start contexts. Primarily, this dataset now includes actions like steals and violations, alongside the previously defined rebounds and inbound plays.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb23"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a>sequences <span class="sc">%&gt;%</span> <span class="fu">head</span>(<span class="dv">10</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 10 × 17
+   game_id    sequence_id offense_team_id init_action end_action success
+   &lt;chr&gt;            &lt;dbl&gt;           &lt;dbl&gt; &lt;chr&gt;       &lt;chr&gt;        &lt;dbl&gt;
+ 1 0022400061           0      1610612752 tipoff      shot             1
+ 2 0022400061           1      1610612752 inbound     shot             0
+ 3 0022400061           2      1610612752 rebound     shot             1
+ 4 0022400061           3      1610612752 inbound     shot             1
+ 5 0022400061           4      1610612752 inbound     shot             0
+ 6 0022400061           5      1610612738 rebound     shot             1
+ 7 0022400061           6      1610612738 inbound     shot             0
+ 8 0022400061           7      1610612752 rebound     shot             0
+ 9 0022400061           8      1610612738 rebound     shot             0
+10 0022400061           9      1610612752 rebound     shot             1
+# ℹ 11 more variables: init_player_id &lt;dbl&gt;, end_player_id &lt;dbl&gt;,
+#   init_play_loc_x &lt;dbl&gt;, init_play_loc_y &lt;dbl&gt;, end_play_loc_x &lt;dbl&gt;,
+#   end_play_loc_y &lt;dbl&gt;, shot_distance &lt;dbl&gt;, shot_zone &lt;chr&gt;,
+#   shot_result &lt;dbl&gt;, shot_type &lt;chr&gt;, shot_was_tpa &lt;dbl&gt;</code></pre>
+</div>
+</div>
+<p>Rows in the <code>sequences</code> dataset correspond to a sequence of plays that have an initiating action, defined as being one of <em>inbound</em>, <em>rebound</em>, <em>steal</em>, <em>violation,</em> or <em>timeout</em>, and an ending action, such as <em>shot</em> or <em>turnover</em>. Each sequence has a corresponding initiating and ending player, based on who did the respective action, except for timeouts, which do not have initiating players.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb25"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a>sequences_w_players <span class="ot">=</span> sequences <span class="sc">%&gt;%</span> <span class="fu">filter</span>(<span class="sc">!</span><span class="fu">is.na</span>(init_player_id) <span class="sc">&amp;</span> <span class="sc">!</span><span class="fu">is.na</span>(end_player_id)) </span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a>sequences_w_players <span class="sc">%&gt;%</span> <span class="fu">head</span>(<span class="dv">10</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 10 × 17
+   game_id    sequence_id offense_team_id init_action end_action success
+   &lt;chr&gt;            &lt;dbl&gt;           &lt;dbl&gt; &lt;chr&gt;       &lt;chr&gt;        &lt;dbl&gt;
+ 1 0022400061           1      1610612752 inbound     shot             0
+ 2 0022400061           2      1610612752 rebound     shot             1
+ 3 0022400061           3      1610612752 inbound     shot             1
+ 4 0022400061           4      1610612752 inbound     shot             0
+ 5 0022400061           5      1610612738 rebound     shot             1
+ 6 0022400061           6      1610612738 inbound     shot             0
+ 7 0022400061           7      1610612752 rebound     shot             0
+ 8 0022400061           8      1610612738 rebound     shot             0
+ 9 0022400061           9      1610612752 rebound     shot             1
+10 0022400061          10      1610612752 inbound     shot             0
+# ℹ 11 more variables: init_player_id &lt;dbl&gt;, end_player_id &lt;dbl&gt;,
+#   init_play_loc_x &lt;dbl&gt;, init_play_loc_y &lt;dbl&gt;, end_play_loc_x &lt;dbl&gt;,
+#   end_play_loc_y &lt;dbl&gt;, shot_distance &lt;dbl&gt;, shot_zone &lt;chr&gt;,
+#   shot_result &lt;dbl&gt;, shot_type &lt;chr&gt;, shot_was_tpa &lt;dbl&gt;</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb27"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a>summary <span class="ot">=</span> sequences_w_players <span class="sc">%&gt;%</span> <span class="fu">group_by</span>(init_action, end_action) <span class="sc">%&gt;%</span> <span class="fu">summarise</span>(</span>
+<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">occurences =</span> <span class="fu">n</span>(),  </span>
+<span id="cb27-3"><a href="#cb27-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">successes =</span> <span class="fu">sum</span>(success)</span>
+<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a>) <span class="sc">%&gt;%</span> <span class="fu">arrange</span>(<span class="fu">desc</span>(successes))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>`summarise()` has grouped output by 'init_action'. You can override using the
+`.groups` argument.</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb29"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a>summary</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 8 × 4
+# Groups:   init_action [4]
+  init_action end_action occurences successes
+  &lt;chr&gt;       &lt;chr&gt;           &lt;int&gt;     &lt;dbl&gt;
+1 rebound     shot           159384     35950
+2 inbound     shot            54114     10586
+3 steal       shot             3311      1571
+4 violation   shot             2310      1061
+5 inbound     turnover        17342         0
+6 rebound     turnover        11008         0
+7 steal       turnover         6317         0
+8 violation   turnover         3958         0</code></pre>
+</div>
+</div>
+<p>Taking a subset of this dataset which focuses on the initiating action features, specifically location data and action type, the <code>glm</code> model can be fitted on the response <em>success</em>.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb31"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb31-1"><a href="#cb31-1" aria-hidden="true" tabindex="-1"></a>encoded_actions <span class="ot">=</span> sequences_w_players <span class="sc">%&gt;%</span> <span class="fu">mutate</span>(</span>
+<span id="cb31-2"><a href="#cb31-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">init_action =</span> <span class="fu">case_when</span>(</span>
+<span id="cb31-3"><a href="#cb31-3" aria-hidden="true" tabindex="-1"></a>    init_action <span class="sc">==</span> <span class="st">'inbound'</span> <span class="sc">~</span> <span class="dv">0</span>,</span>
+<span id="cb31-4"><a href="#cb31-4" aria-hidden="true" tabindex="-1"></a>    init_action <span class="sc">==</span> <span class="st">'rebound'</span> <span class="sc">~</span> <span class="dv">1</span>,</span>
+<span id="cb31-5"><a href="#cb31-5" aria-hidden="true" tabindex="-1"></a>    init_action <span class="sc">==</span> <span class="st">'steal'</span> <span class="sc">~</span> <span class="dv">2</span>,</span>
+<span id="cb31-6"><a href="#cb31-6" aria-hidden="true" tabindex="-1"></a>    init_action <span class="sc">==</span> <span class="st">'violation'</span> <span class="sc">~</span> <span class="dv">3</span>,</span>
+<span id="cb31-7"><a href="#cb31-7" aria-hidden="true" tabindex="-1"></a>    <span class="at">.default =</span> <span class="dv">0</span></span>
+<span id="cb31-8"><a href="#cb31-8" aria-hidden="true" tabindex="-1"></a>  ),</span>
+<span id="cb31-9"><a href="#cb31-9" aria-hidden="true" tabindex="-1"></a>  <span class="at">end_action =</span> <span class="fu">case_when</span>(</span>
+<span id="cb31-10"><a href="#cb31-10" aria-hidden="true" tabindex="-1"></a>    end_action <span class="sc">==</span> <span class="st">'turnover'</span> <span class="sc">~</span> <span class="dv">0</span>,</span>
+<span id="cb31-11"><a href="#cb31-11" aria-hidden="true" tabindex="-1"></a>    end_action <span class="sc">==</span> <span class="st">'shot'</span> <span class="sc">~</span> <span class="dv">1</span>,</span>
+<span id="cb31-12"><a href="#cb31-12" aria-hidden="true" tabindex="-1"></a>    <span class="at">.default =</span> <span class="dv">0</span></span>
+<span id="cb31-13"><a href="#cb31-13" aria-hidden="true" tabindex="-1"></a>  ),</span>
+<span id="cb31-14"><a href="#cb31-14" aria-hidden="true" tabindex="-1"></a>  <span class="at">init_play_loc_x =</span> init_play_loc_x<span class="sc">/</span><span class="fu">max</span>(sequences_w_players<span class="sc">$</span>init_play_loc_x),</span>
+<span id="cb31-15"><a href="#cb31-15" aria-hidden="true" tabindex="-1"></a>  <span class="at">init_play_loc_y =</span> init_play_loc_y<span class="sc">/</span><span class="fu">max</span>(sequences_w_players<span class="sc">$</span>init_play_loc_y)</span>
+<span id="cb31-16"><a href="#cb31-16" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb31-17"><a href="#cb31-17" aria-hidden="true" tabindex="-1"></a>prob_success <span class="ot">=</span> <span class="fu">glm</span>(success <span class="sc">~</span> init_action <span class="sc">+</span> init_play_loc_x <span class="sc">+</span> init_play_loc_y,</span>
+<span id="cb31-18"><a href="#cb31-18" aria-hidden="true" tabindex="-1"></a>                   <span class="at">family=</span>binomial,</span>
+<span id="cb31-19"><a href="#cb31-19" aria-hidden="true" tabindex="-1"></a>                   <span class="at">data =</span> encoded_actions)</span>
+<span id="cb31-20"><a href="#cb31-20" aria-hidden="true" tabindex="-1"></a><span class="fu">summary</span>(prob_success)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>
+Call:
+glm(formula = success ~ init_action + init_play_loc_x + init_play_loc_y, 
+    family = binomial, data = encoded_actions)
+
+Coefficients:
+                 Estimate Std. Error  z value Pr(&gt;|z|)    
+(Intercept)     -1.664629   0.008915 -186.733   &lt;2e-16 ***
+init_action      0.172177   0.008009   21.498   &lt;2e-16 ***
+init_play_loc_x -0.028197   0.012435   -2.268   0.0234 *  
+init_play_loc_y  0.993190   0.031703   31.328   &lt;2e-16 ***
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+(Dispersion parameter for binomial family taken to be 1)
+
+    Null deviance: 251211  on 257743  degrees of freedom
+Residual deviance: 249840  on 257740  degrees of freedom
+AIC: 249848
+
+Number of Fisher Scoring iterations: 4</code></pre>
+</div>
+</div>
+<p>With the model now defined, it can be applied retroactively to previous rows of the sequences dataset to define the probability of a possession being successful based on its type and location. Further, this probability of success will be multiplied by 2 and 3, weighted by the occurrence of each shot type’s successes, to define the initial EPV of the sequence.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb33"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a>data_prob_success <span class="ot">=</span> encoded_actions <span class="sc">%&gt;%</span> <span class="fu">select</span>(<span class="fu">c</span>(init_player_id, init_action, init_play_loc_x, init_play_loc_y, success, shot_was_tpa))</span>
+<span id="cb33-2"><a href="#cb33-2" aria-hidden="true" tabindex="-1"></a>test_set_prob_success <span class="ot">=</span> data_prob_success <span class="sc">%&gt;%</span> <span class="fu">sample_frac</span>(<span class="at">size=</span><span class="fl">0.25</span>, <span class="at">replace=</span><span class="cn">FALSE</span>)</span>
+<span id="cb33-3"><a href="#cb33-3" aria-hidden="true" tabindex="-1"></a>pred_success <span class="ot">=</span> <span class="fu">predict</span>(prob_success, <span class="at">newdata =</span> test_set_prob_success, <span class="at">type=</span><span class="st">'response'</span>)</span>
+<span id="cb33-4"><a href="#cb33-4" aria-hidden="true" tabindex="-1"></a>test_set_prob_success <span class="ot">=</span> test_set_prob_success <span class="sc">%&gt;%</span> <span class="fu">mutate</span>(<span class="at">pred_success =</span> pred_success)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb34"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb34-1"><a href="#cb34-1" aria-hidden="true" tabindex="-1"></a>num_shot_types <span class="ot">=</span> encoded_actions <span class="sc">%&gt;%</span> <span class="fu">filter</span>(shot_was_tpa <span class="sc">&gt;=</span> <span class="dv">0</span> <span class="sc">&amp;</span> success <span class="sc">==</span> <span class="dv">1</span>) <span class="sc">%&gt;%</span> <span class="fu">group_by</span>(success, shot_was_tpa) <span class="sc">%&gt;%</span> <span class="fu">summarise</span>(</span>
+<span id="cb34-2"><a href="#cb34-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">occurences =</span> <span class="fu">n</span>()</span>
+<span id="cb34-3"><a href="#cb34-3" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>`summarise()` has grouped output by 'success'. You can override using the
+`.groups` argument.</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb36"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb36-1"><a href="#cb36-1" aria-hidden="true" tabindex="-1"></a>num_shot_types <span class="sc">%&gt;%</span> <span class="fu">filter</span>(shot_was_tpa <span class="sc">&gt;=</span> <span class="dv">0</span>) <span class="sc">%&gt;%</span> <span class="fu">mutate</span>(</span>
+<span id="cb36-2"><a href="#cb36-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">pot_val =</span> <span class="fu">c</span>(<span class="dv">2</span>, <span class="dv">3</span>),</span>
+<span id="cb36-3"><a href="#cb36-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">exp_val =</span> pot_val<span class="sc">*</span>(num_shot_types[num_shot_types<span class="sc">$</span>shot_was_tpa <span class="sc">==</span> shot_was_tpa,] <span class="sc">%&gt;%</span> <span class="fu">pull</span>(<span class="st">'occurences'</span>))<span class="sc">/</span><span class="fu">sum</span>(num_shot_types<span class="sc">$</span>occurences)</span>
+<span id="cb36-4"><a href="#cb36-4" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 2 × 5
+# Groups:   success [1]
+  success shot_was_tpa occurences pot_val exp_val
+    &lt;dbl&gt;        &lt;dbl&gt;      &lt;int&gt;   &lt;dbl&gt;   &lt;dbl&gt;
+1       1            0      33324       2   1.36 
+2       1            1      15844       3   0.967</code></pre>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb38"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb38-1"><a href="#cb38-1" aria-hidden="true" tabindex="-1"></a>num_shot_types <span class="sc">%&gt;%</span> <span class="fu">filter</span>(shot_was_tpa <span class="sc">&gt;=</span> <span class="dv">0</span>) <span class="sc">%&gt;%</span> <span class="fu">mutate</span>(</span>
+<span id="cb38-2"><a href="#cb38-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">pot_val =</span> <span class="fu">c</span>(<span class="dv">2</span>, <span class="dv">3</span>),</span>
+<span id="cb38-3"><a href="#cb38-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">exp_val =</span> pot_val<span class="sc">*</span>(num_shot_types[num_shot_types<span class="sc">$</span>shot_was_tpa <span class="sc">==</span> shot_was_tpa,] <span class="sc">%&gt;%</span> <span class="fu">pull</span>(<span class="st">'occurences'</span>))<span class="sc">/</span><span class="fu">sum</span>(num_shot_types<span class="sc">$</span>occurences)</span>
+<span id="cb38-4"><a href="#cb38-4" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 2 × 5
+# Groups:   success [1]
+  success shot_was_tpa occurences pot_val exp_val
+    &lt;dbl&gt;        &lt;dbl&gt;      &lt;int&gt;   &lt;dbl&gt;   &lt;dbl&gt;
+1       1            0      33324       2   1.36 
+2       1            1      15844       3   0.967</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb40"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb40-1"><a href="#cb40-1" aria-hidden="true" tabindex="-1"></a>ev_glm <span class="ot">=</span> test_set_prob_success <span class="sc">%&gt;%</span> <span class="fu">mutate</span>(<span class="at">init_eV =</span> (<span class="fl">1.36</span><span class="sc">*</span>pred_success<span class="fl">+0.967</span><span class="sc">*</span>pred_success)) <span class="do">## calculate expected value</span></span>
+<span id="cb40-2"><a href="#cb40-2" aria-hidden="true" tabindex="-1"></a>top_10_initiators <span class="ot">=</span> ev_glm <span class="sc">%&gt;%</span> <span class="fu">group_by</span>(init_player_id) <span class="sc">%&gt;%</span> <span class="fu">summarise</span>(<span class="at">total_init_eV =</span> <span class="fu">sum</span>(init_eV), <span class="at">sequences =</span> <span class="fu">n</span>(), <span class="at">eV_per_sequence =</span> <span class="fu">sum</span>(init_eV)<span class="sc">/</span><span class="fu">n</span>()) <span class="sc">%&gt;%</span> <span class="fu">arrange</span>(<span class="fu">desc</span>(total_init_eV))</span>
+<span id="cb40-3"><a href="#cb40-3" aria-hidden="true" tabindex="-1"></a>top_10_initiators <span class="sc">%&gt;%</span> </span>
+<span id="cb40-4"><a href="#cb40-4" aria-hidden="true" tabindex="-1"></a>  <span class="fu">left_join</span>(hoopR<span class="sc">::</span><span class="fu">nba_commonallplayers</span>(<span class="at">season=</span><span class="fu">year_to_season</span>(<span class="dv">2024</span>))<span class="sc">$</span>CommonAllPlayers <span class="sc">%&gt;%</span></span>
+<span id="cb40-5"><a href="#cb40-5" aria-hidden="true" tabindex="-1"></a>              <span class="fu">rename</span>(<span class="at">init_player_id =</span> PERSON_ID) <span class="sc">%&gt;%</span></span>
+<span id="cb40-6"><a href="#cb40-6" aria-hidden="true" tabindex="-1"></a>              <span class="fu">mutate</span>(<span class="at">init_player_id =</span> <span class="fu">as.numeric</span>(init_player_id)) <span class="sc">%&gt;%</span> <span class="fu">select</span>(<span class="fu">c</span>(<span class="st">'init_player_id'</span>, <span class="st">'DISPLAY_FIRST_LAST'</span>))) <span class="sc">%&gt;%</span></span>
+<span id="cb40-7"><a href="#cb40-7" aria-hidden="true" tabindex="-1"></a>  <span class="fu">head</span>(<span class="dv">10</span>) <span class="sc">%&gt;%</span> <span class="fu">rename</span>(<span class="at">player_name =</span> DISPLAY_FIRST_LAST) <span class="sc">%&gt;%</span> <span class="fu">select</span>(<span class="fu">c</span>(<span class="st">'player_name'</span>, <span class="fu">everything</span>()))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Joining with `by = join_by(init_player_id)`</code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 10 × 5
+   player_name            init_player_id total_init_eV sequences eV_per_sequence
+   &lt;chr&gt;                           &lt;dbl&gt;         &lt;dbl&gt;     &lt;int&gt;           &lt;dbl&gt;
+ 1 Karl-Anthony Towns            1626157          179.       405           0.443
+ 2 Giannis Antetokounmpo          203507          179.       405           0.441
+ 3 Shai Gilgeous-Alexand…        1628983          168.       380           0.443
+ 4 Nikola Jokić                   203999          167.       379           0.440
+ 5 James Harden                   201935          166.       367           0.452
+ 6 Cade Cunningham               1630595          163.       360           0.451
+ 7 Alperen Sengun                1630578          162.       368           0.439
+ 8 Anthony Edwards               1630162          161.       356           0.452
+ 9 Devin Booker                  1626164          158.       355           0.445
+10 Trae Young                    1629027          157.       349           0.449</code></pre>
+</div>
+</div>
+<p>With the initial EPV values in place, the expected value of the ending actions can be derived from a model estimating, if a shot was taken from the ending position, the probability of that shot being made. As before, a Random Forest model will be employed for this task.</p>
+<div class="cell" data-result="false">
+<div class="sourceCode cell-code" id="cb43"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb43-1"><a href="#cb43-1" aria-hidden="true" tabindex="-1"></a>data_eV_end <span class="ot">=</span> encoded_actions <span class="sc">%&gt;%</span> <span class="fu">select</span>(<span class="fu">c</span>(<span class="st">'success'</span>,<span class="st">'end_action'</span>,<span class="st">'end_player_id'</span>, <span class="st">'end_play_loc_x'</span>, <span class="st">'end_play_loc_y'</span>, <span class="st">'shot_distance'</span>, <span class="st">'shot_zone'</span>, <span class="st">'shot_distance'</span>, <span class="st">'shot_result'</span>, <span class="st">'shot_type'</span>, <span class="st">'shot_was_tpa'</span>))</span>
+<span id="cb43-2"><a href="#cb43-2" aria-hidden="true" tabindex="-1"></a>data_eV_end_shots <span class="ot">=</span> data_eV_end <span class="sc">%&gt;%</span> <span class="fu">filter</span>(<span class="sc">!</span><span class="fu">is.na</span>(shot_type) <span class="sc">&amp;</span> shot_was_tpa <span class="sc">&gt;=</span> <span class="dv">0</span>)</span>
+<span id="cb43-3"><a href="#cb43-3" aria-hidden="true" tabindex="-1"></a><span class="do">## Mapping possessions that did not end in shot zone to their given shot zone based on X,Y</span></span>
+<span id="cb43-4"><a href="#cb43-4" aria-hidden="true" tabindex="-1"></a>shot_map <span class="ot">=</span> data_eV_end_shots <span class="sc">%&gt;%</span> </span>
+<span id="cb43-5"><a href="#cb43-5" aria-hidden="true" tabindex="-1"></a>  <span class="fu">group_by</span>(shot_zone) <span class="sc">%&gt;%</span> </span>
+<span id="cb43-6"><a href="#cb43-6" aria-hidden="true" tabindex="-1"></a>  <span class="fu">summarise</span>(<span class="at">min_x =</span> <span class="fu">min</span>(end_play_loc_x), <span class="at">max_x =</span> <span class="fu">max</span>(end_play_loc_x), <span class="at">min_y =</span> <span class="fu">min</span>(end_play_loc_y), <span class="at">max_y =</span> <span class="fu">max</span>(end_play_loc_y))</span>
+<span id="cb43-7"><a href="#cb43-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb43-8"><a href="#cb43-8" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span>(i <span class="cf">in</span> <span class="dv">1</span><span class="sc">:</span><span class="fu">nrow</span>(data_eV_end)){</span>
+<span id="cb43-9"><a href="#cb43-9" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span>(data_eV_end[i,<span class="st">'shot_zone'</span>] <span class="sc">==</span> <span class="st">'-1'</span>){</span>
+<span id="cb43-10"><a href="#cb43-10" aria-hidden="true" tabindex="-1"></a>    curr_x <span class="ot">=</span> data_eV_end[i,] <span class="sc">%&gt;%</span> <span class="fu">pull</span>(end_play_loc_x)</span>
+<span id="cb43-11"><a href="#cb43-11" aria-hidden="true" tabindex="-1"></a>    curr_y <span class="ot">=</span> data_eV_end[i,] <span class="sc">%&gt;%</span> <span class="fu">pull</span>(end_play_loc_y)</span>
+<span id="cb43-12"><a href="#cb43-12" aria-hidden="true" tabindex="-1"></a>    shot_zone <span class="ot">=</span> <span class="st">'Center(C)'</span></span>
+<span id="cb43-13"><a href="#cb43-13" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span>(j <span class="cf">in</span> <span class="dv">1</span><span class="sc">:</span><span class="fu">nrow</span>(shot_map)){</span>
+<span id="cb43-14"><a href="#cb43-14" aria-hidden="true" tabindex="-1"></a>      min_x <span class="ot">=</span> shot_map[j,] <span class="sc">%&gt;%</span> <span class="fu">pull</span>(<span class="st">'min_x'</span>)</span>
+<span id="cb43-15"><a href="#cb43-15" aria-hidden="true" tabindex="-1"></a>      max_x <span class="ot">=</span> shot_map[j,] <span class="sc">%&gt;%</span> <span class="fu">pull</span>(<span class="st">'max_x'</span>)</span>
+<span id="cb43-16"><a href="#cb43-16" aria-hidden="true" tabindex="-1"></a>      min_y <span class="ot">=</span> shot_map[j,] <span class="sc">%&gt;%</span> <span class="fu">pull</span>(<span class="st">'min_y'</span>)</span>
+<span id="cb43-17"><a href="#cb43-17" aria-hidden="true" tabindex="-1"></a>      max_y <span class="ot">=</span> shot_map[j,] <span class="sc">%&gt;%</span> <span class="fu">pull</span>(<span class="st">'max_y'</span>)</span>
+<span id="cb43-18"><a href="#cb43-18" aria-hidden="true" tabindex="-1"></a>      <span class="cf">if</span>(curr_x <span class="sc">&gt;=</span> min_x <span class="sc">&amp;</span> curr_x <span class="sc">&lt;=</span> max_x <span class="sc">&amp;</span> curr_y <span class="sc">&gt;=</span> min_y <span class="sc">&amp;</span> curr_y <span class="sc">&lt;=</span> max_y){</span>
+<span id="cb43-19"><a href="#cb43-19" aria-hidden="true" tabindex="-1"></a>        shot_zone <span class="ot">=</span> shot_map[j,] <span class="sc">%&gt;%</span> <span class="fu">pull</span>(<span class="st">'shot_zone'</span>)</span>
+<span id="cb43-20"><a href="#cb43-20" aria-hidden="true" tabindex="-1"></a>        <span class="cf">break</span></span>
+<span id="cb43-21"><a href="#cb43-21" aria-hidden="true" tabindex="-1"></a>      }</span>
+<span id="cb43-22"><a href="#cb43-22" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb43-23"><a href="#cb43-23" aria-hidden="true" tabindex="-1"></a>    data_eV_end[i, <span class="st">'shot_zone'</span>] <span class="ot">=</span> shot_zone</span>
+<span id="cb43-24"><a href="#cb43-24" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb43-25"><a href="#cb43-25" aria-hidden="true" tabindex="-1"></a>}</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p>When identifying where a play ended, distance to the target basket (shot distance) can be estimated with a linear model <code>lm</code> on the ending action’s X and Y coordinate data. From this, it is possible to create relevant data points to be used in the subsequent Random Forest classification.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb44"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb44-1"><a href="#cb44-1" aria-hidden="true" tabindex="-1"></a><span class="do">## Estimating missing distances based on coordinates</span></span>
+<span id="cb44-2"><a href="#cb44-2" aria-hidden="true" tabindex="-1"></a>shot_distances <span class="ot">=</span> data_eV_end <span class="sc">%&gt;%</span> <span class="fu">filter</span>(shot_distance <span class="sc">&gt;=</span> <span class="sc">-</span><span class="dv">1</span>)</span>
+<span id="cb44-3"><a href="#cb44-3" aria-hidden="true" tabindex="-1"></a>distance_model <span class="ot">=</span> <span class="fu">lm</span>(shot_distance <span class="sc">~</span> <span class="dv">1</span><span class="sc">+</span>end_play_loc_y, <span class="at">data=</span>shot_distances)</span>
+<span id="cb44-4"><a href="#cb44-4" aria-hidden="true" tabindex="-1"></a>dist_predictions <span class="ot">=</span> <span class="fu">predict</span>(distance_model, <span class="at">newdata=</span>data_eV_end)</span>
+<span id="cb44-5"><a href="#cb44-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb44-6"><a href="#cb44-6" aria-hidden="true" tabindex="-1"></a>data_eV_end <span class="ot">=</span> data_eV_end <span class="sc">%&gt;%</span> <span class="fu">mutate</span>(<span class="at">dist_pred =</span> dist_predictions)</span>
+<span id="cb44-7"><a href="#cb44-7" aria-hidden="true" tabindex="-1"></a>data_eV_end <span class="ot">=</span> data_eV_end <span class="sc">%&gt;%</span> <span class="fu">mutate</span>(</span>
+<span id="cb44-8"><a href="#cb44-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">shot_distance =</span> <span class="fu">case_when</span>(</span>
+<span id="cb44-9"><a href="#cb44-9" aria-hidden="true" tabindex="-1"></a>    shot_distance <span class="sc">&lt;</span> <span class="dv">0</span> <span class="sc">~</span> dist_pred,</span>
+<span id="cb44-10"><a href="#cb44-10" aria-hidden="true" tabindex="-1"></a>    <span class="at">.default =</span> shot_distance</span>
+<span id="cb44-11"><a href="#cb44-11" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb44-12"><a href="#cb44-12" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb44-13"><a href="#cb44-13" aria-hidden="true" tabindex="-1"></a>data_eV_end <span class="ot">=</span> data_eV_end <span class="sc">%&gt;%</span> <span class="fu">select</span>(<span class="sc">-</span><span class="fu">c</span>(<span class="st">'dist_pred'</span>))</span>
+<span id="cb44-14"><a href="#cb44-14" aria-hidden="true" tabindex="-1"></a>data_eV_end <span class="ot">=</span> data_eV_end <span class="sc">%&gt;%</span> <span class="fu">mutate</span>(<span class="at">shot_distance =</span> <span class="fu">round</span>(shot_distance))</span>
+<span id="cb44-15"><a href="#cb44-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb44-16"><a href="#cb44-16" aria-hidden="true" tabindex="-1"></a><span class="do">## Encode shot_zones to numeric</span></span>
+<span id="cb44-17"><a href="#cb44-17" aria-hidden="true" tabindex="-1"></a>encoded_data_eV_end <span class="ot">=</span> data_eV_end <span class="sc">%&gt;%</span> <span class="fu">mutate</span>(</span>
+<span id="cb44-18"><a href="#cb44-18" aria-hidden="true" tabindex="-1"></a>  <span class="at">shot_zone =</span> <span class="fu">case_when</span>(</span>
+<span id="cb44-19"><a href="#cb44-19" aria-hidden="true" tabindex="-1"></a>    shot_zone <span class="sc">==</span> <span class="st">'Back Court(BC)'</span> <span class="sc">~</span> <span class="dv">0</span>,</span>
+<span id="cb44-20"><a href="#cb44-20" aria-hidden="true" tabindex="-1"></a>    shot_zone <span class="sc">==</span> <span class="st">'Center(C)'</span> <span class="sc">~</span> <span class="dv">1</span>,</span>
+<span id="cb44-21"><a href="#cb44-21" aria-hidden="true" tabindex="-1"></a>    shot_zone <span class="sc">==</span> <span class="st">'Left Side Center(LC)'</span> <span class="sc">~</span> <span class="dv">2</span>,</span>
+<span id="cb44-22"><a href="#cb44-22" aria-hidden="true" tabindex="-1"></a>    shot_zone <span class="sc">==</span> <span class="st">'Left Side(L)'</span> <span class="sc">~</span> <span class="dv">3</span>,</span>
+<span id="cb44-23"><a href="#cb44-23" aria-hidden="true" tabindex="-1"></a>    shot_zone <span class="sc">==</span> <span class="st">'Right Side Center(RC)'</span> <span class="sc">~</span> <span class="dv">4</span>,</span>
+<span id="cb44-24"><a href="#cb44-24" aria-hidden="true" tabindex="-1"></a>    shot_zone <span class="sc">==</span> <span class="st">'Right Side (R)'</span> <span class="sc">~</span> <span class="dv">5</span>,</span>
+<span id="cb44-25"><a href="#cb44-25" aria-hidden="true" tabindex="-1"></a>    <span class="at">.default =</span> <span class="dv">0</span></span>
+<span id="cb44-26"><a href="#cb44-26" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb44-27"><a href="#cb44-27" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb44-28"><a href="#cb44-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb44-29"><a href="#cb44-29" aria-hidden="true" tabindex="-1"></a>max_x <span class="ot">=</span> <span class="fu">max</span>(encoded_data_eV_end<span class="sc">$</span>end_play_loc_x)</span>
+<span id="cb44-30"><a href="#cb44-30" aria-hidden="true" tabindex="-1"></a>max_y <span class="ot">=</span> <span class="fu">max</span>(encoded_data_eV_end<span class="sc">$</span>end_play_loc_y)</span>
+<span id="cb44-31"><a href="#cb44-31" aria-hidden="true" tabindex="-1"></a>max_distance <span class="ot">=</span> <span class="fu">max</span>(encoded_data_eV_end<span class="sc">$</span>shot_distance)</span>
+<span id="cb44-32"><a href="#cb44-32" aria-hidden="true" tabindex="-1"></a>encoded_data_eV_end <span class="ot">=</span> encoded_data_eV_end <span class="sc">%&gt;%</span> <span class="fu">mutate</span>(</span>
+<span id="cb44-33"><a href="#cb44-33" aria-hidden="true" tabindex="-1"></a>  <span class="at">end_play_loc_x =</span> end_play_loc_x<span class="sc">/</span>max_x,</span>
+<span id="cb44-34"><a href="#cb44-34" aria-hidden="true" tabindex="-1"></a>  <span class="at">end_play_loc_y =</span> end_play_loc_y<span class="sc">/</span>max_y,</span>
+<span id="cb44-35"><a href="#cb44-35" aria-hidden="true" tabindex="-1"></a>  <span class="at">shot_distance =</span> shot_distance<span class="sc">/</span>max_distance,</span>
+<span id="cb44-36"><a href="#cb44-36" aria-hidden="true" tabindex="-1"></a>  <span class="at">shot_zone =</span> shot_zone<span class="sc">/</span><span class="dv">5</span></span>
+<span id="cb44-37"><a href="#cb44-37" aria-hidden="true" tabindex="-1"></a>) </span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p>With the new estimations for shot distances in place, the Random Forest model can be fitted and applied to calculate the xPts value across the 2024 season.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb45"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb45-1"><a href="#cb45-1" aria-hidden="true" tabindex="-1"></a>xg_model <span class="ot">=</span> ranger<span class="sc">::</span><span class="fu">ranger</span>(success <span class="sc">~</span> shot_distance <span class="sc">+</span> end_play_loc_x <span class="sc">+</span> end_play_loc_y <span class="sc">+</span> shot_zone, <span class="at">data=</span>encoded_data_eV_end, <span class="at">probability=</span><span class="cn">TRUE</span>, <span class="at">write.forest =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb45-2"><a href="#cb45-2" aria-hidden="true" tabindex="-1"></a>shot_made_predictions <span class="ot">=</span> <span class="fu">predict</span>(xg_model, <span class="at">data =</span> encoded_data_eV_end)</span>
+<span id="cb45-3"><a href="#cb45-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb45-4"><a href="#cb45-4" aria-hidden="true" tabindex="-1"></a>predictions <span class="ot">=</span> shot_made_predictions<span class="sc">$</span>predictions[,<span class="dv">2</span>]</span>
+<span id="cb45-5"><a href="#cb45-5" aria-hidden="true" tabindex="-1"></a>data_eV_end <span class="ot">=</span> data_eV_end <span class="sc">%&gt;%</span> <span class="fu">mutate</span>(</span>
+<span id="cb45-6"><a href="#cb45-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">pred_shot_made_prob =</span> predictions</span>
+<span id="cb45-7"><a href="#cb45-7" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb45-8"><a href="#cb45-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb45-9"><a href="#cb45-9" aria-hidden="true" tabindex="-1"></a>test_shot_prob_set <span class="ot">=</span> data_eV_end</span>
+<span id="cb45-10"><a href="#cb45-10" aria-hidden="true" tabindex="-1"></a>three_pt_distance_by_zone <span class="ot">=</span> data_eV_end <span class="sc">%&gt;%</span> <span class="fu">filter</span>(shot_was_tpa <span class="sc">&gt;=</span> <span class="dv">1</span>) <span class="sc">%&gt;%</span> <span class="fu">group_by</span>(shot_zone) <span class="sc">%&gt;%</span> <span class="fu">summarise</span>(<span class="at">distance =</span> <span class="fu">min</span>(shot_distance))</span>
+<span id="cb45-11"><a href="#cb45-11" aria-hidden="true" tabindex="-1"></a>test_shot_prob_set <span class="ot">=</span> test_shot_prob_set <span class="sc">%&gt;%</span> <span class="fu">mutate</span>(<span class="at">in_three_range =</span> <span class="fu">numeric</span>(<span class="at">length=</span><span class="fu">nrow</span>(test_shot_prob_set)))</span>
+<span id="cb45-12"><a href="#cb45-12" aria-hidden="true" tabindex="-1"></a><span class="do">## Determining if ending location was in three point range</span></span>
+<span id="cb45-13"><a href="#cb45-13" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span>(i <span class="cf">in</span> <span class="dv">1</span><span class="sc">:</span><span class="fu">nrow</span>(data_eV_end)){</span>
+<span id="cb45-14"><a href="#cb45-14" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span>(test_shot_prob_set[i,<span class="st">'shot_result'</span>] <span class="sc">&lt;=</span> <span class="sc">-</span><span class="dv">1</span>){</span>
+<span id="cb45-15"><a href="#cb45-15" aria-hidden="true" tabindex="-1"></a>    test_shot_prob_set[i, <span class="st">'in_three_range'</span>] <span class="ot">=</span> test_shot_prob_set[i, <span class="st">'shot_distance'</span>] <span class="sc">%&gt;%</span> <span class="fu">pull</span>() <span class="sc">&gt;=</span> three_pt_distance_by_zone[three_pt_distance_by_zone<span class="sc">$</span>shot_zone <span class="sc">==</span> test_shot_prob_set[i,<span class="st">'shot_zone'</span>] <span class="sc">%&gt;%</span> <span class="fu">pull</span>(), <span class="st">'distance'</span>] <span class="sc">%&gt;%</span> <span class="fu">pull</span>()</span>
+<span id="cb45-16"><a href="#cb45-16" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb45-17"><a href="#cb45-17" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb45-18"><a href="#cb45-18" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb45-19"><a href="#cb45-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb45-20"><a href="#cb45-20" aria-hidden="true" tabindex="-1"></a>test_shot_prob_set <span class="ot">=</span> test_shot_prob_set <span class="sc">%&gt;%</span> <span class="fu">mutate</span>(</span>
+<span id="cb45-21"><a href="#cb45-21" aria-hidden="true" tabindex="-1"></a>  <span class="at">xPts =</span> <span class="fu">case_when</span>(</span>
+<span id="cb45-22"><a href="#cb45-22" aria-hidden="true" tabindex="-1"></a>    shot_was_tpa <span class="sc">&gt;</span> <span class="dv">0</span> <span class="sc">|</span> in_three_range <span class="sc">&gt;</span> <span class="dv">0</span> <span class="sc">~</span> <span class="dv">3</span><span class="sc">*</span>pred_shot_made_prob,</span>
+<span id="cb45-23"><a href="#cb45-23" aria-hidden="true" tabindex="-1"></a>    <span class="at">.default =</span> <span class="dv">3</span><span class="sc">*</span>pred_shot_made_prob</span>
+<span id="cb45-24"><a href="#cb45-24" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb45-25"><a href="#cb45-25" aria-hidden="true" tabindex="-1"></a>) </span>
+<span id="cb45-26"><a href="#cb45-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb45-27"><a href="#cb45-27" aria-hidden="true" tabindex="-1"></a>test_shot_prob_set <span class="sc">%&gt;%</span> <span class="fu">group_by</span>(end_player_id) <span class="sc">%&gt;%</span> <span class="fu">summarise</span>(</span>
+<span id="cb45-28"><a href="#cb45-28" aria-hidden="true" tabindex="-1"></a>  <span class="at">tot_xPts =</span> <span class="fu">sum</span>(xPts)</span>
+<span id="cb45-29"><a href="#cb45-29" aria-hidden="true" tabindex="-1"></a>) <span class="sc">%&gt;%</span> <span class="fu">arrange</span>(<span class="fu">desc</span>(tot_xPts))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 622 × 2
+   end_player_id tot_xPts
+           &lt;dbl&gt;    &lt;dbl&gt;
+ 1        203507    1128.
+ 2       1628983    1087.
+ 3       1630162     980.
+ 4       1630224     970.
+ 5       1628369     969.
+ 6       1630595     917.
+ 7        203999     902.
+ 8       1626164     882.
+ 9        201942     859.
+10        203897     854.
+# ℹ 612 more rows</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb47"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb47-1"><a href="#cb47-1" aria-hidden="true" tabindex="-1"></a><span class="do">### Results of applying model across all sequences, by player</span></span>
+<span id="cb47-2"><a href="#cb47-2" aria-hidden="true" tabindex="-1"></a>xPts_w_players <span class="ot">=</span> test_shot_prob_set <span class="sc">%&gt;%</span> <span class="fu">group_by</span>(end_player_id) <span class="sc">%&gt;%</span> <span class="fu">summarise</span>(</span>
+<span id="cb47-3"><a href="#cb47-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">tot_xPts =</span> <span class="fu">sum</span>(xPts), <span class="at">sequences =</span> <span class="fu">n</span>(), <span class="at">xPts_per_sequence =</span> <span class="fu">sum</span>(xPts)<span class="sc">/</span><span class="fu">n</span>()</span>
+<span id="cb47-4"><a href="#cb47-4" aria-hidden="true" tabindex="-1"></a>) <span class="sc">%&gt;%</span> <span class="fu">arrange</span>(<span class="fu">desc</span>(tot_xPts)) <span class="sc">%&gt;%</span> <span class="fu">left_join</span>(hoopR<span class="sc">::</span><span class="fu">nba_commonallplayers</span>(<span class="at">season=</span><span class="fu">year_to_season</span>(<span class="dv">2024</span>))<span class="sc">$</span>CommonAllPlayers <span class="sc">%&gt;%</span></span>
+<span id="cb47-5"><a href="#cb47-5" aria-hidden="true" tabindex="-1"></a>                                                <span class="fu">rename</span>(<span class="at">end_player_id =</span> PERSON_ID) <span class="sc">%&gt;%</span></span>
+<span id="cb47-6"><a href="#cb47-6" aria-hidden="true" tabindex="-1"></a>                                                <span class="fu">mutate</span>(<span class="at">end_player_id =</span> <span class="fu">as.numeric</span>(end_player_id)) <span class="sc">%&gt;%</span> <span class="fu">select</span>(<span class="fu">c</span>(<span class="st">'end_player_id'</span>, <span class="st">'DISPLAY_FIRST_LAST'</span>)))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Joining with `by = join_by(end_player_id)`</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb49"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb49-1"><a href="#cb49-1" aria-hidden="true" tabindex="-1"></a>xPts_w_players <span class="sc">%&gt;%</span> <span class="fu">head</span>(<span class="dv">10</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 10 × 5
+   end_player_id tot_xPts sequences xPts_per_sequence DISPLAY_FIRST_LAST     
+           &lt;dbl&gt;    &lt;dbl&gt;     &lt;int&gt;             &lt;dbl&gt; &lt;chr&gt;                  
+ 1        203507    1128.      1610             0.701 Giannis Antetokounmpo  
+ 2       1628983    1087.      1497             0.726 Shai Gilgeous-Alexander
+ 3       1630162     980.      1428             0.686 Anthony Edwards        
+ 4       1630224     970.      1379             0.703 Jalen Green            
+ 5       1628369     969.      1438             0.674 Jayson Tatum           
+ 6       1630595     917.      1428             0.642 Cade Cunningham        
+ 7        203999     902.      1541             0.585 Nikola Jokić           
+ 8       1626164     882.      1335             0.661 Devin Booker           
+ 9        201942     859.      1271             0.676 DeMar DeRozan          
+10        203897     854.      1120             0.762 Zach LaVine            </code></pre>
+</div>
+</div>
+<p>Now, the xT metric can be completed by summing a player’s EPV from initiating plays and their xPts from plays they ended.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb51"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb51-1"><a href="#cb51-1" aria-hidden="true" tabindex="-1"></a>init_players <span class="ot">=</span> top_10_initiators <span class="sc">%&gt;%</span></span>
+<span id="cb51-2"><a href="#cb51-2" aria-hidden="true" tabindex="-1"></a>  <span class="fu">rename</span>(<span class="at">player_id =</span> init_player_id, <span class="at">init_sequences =</span> sequences) <span class="sc">%&gt;%</span></span>
+<span id="cb51-3"><a href="#cb51-3" aria-hidden="true" tabindex="-1"></a>  <span class="fu">select</span>(<span class="fu">c</span>(<span class="st">'player_id'</span>, <span class="st">'total_init_eV'</span>, <span class="st">'eV_per_sequence'</span>, <span class="st">'init_sequences'</span>))</span>
+<span id="cb51-4"><a href="#cb51-4" aria-hidden="true" tabindex="-1"></a>end_players <span class="ot">=</span> xPts_w_players <span class="sc">%&gt;%</span> </span>
+<span id="cb51-5"><a href="#cb51-5" aria-hidden="true" tabindex="-1"></a>  <span class="fu">rename</span>(<span class="at">player_id =</span> end_player_id, <span class="at">ended_sequences =</span> sequences) <span class="sc">%&gt;%</span> </span>
+<span id="cb51-6"><a href="#cb51-6" aria-hidden="true" tabindex="-1"></a>  <span class="fu">select</span>(<span class="fu">c</span>(<span class="st">'player_id'</span>, <span class="st">'tot_xPts'</span>,<span class="st">'xPts_per_sequence'</span>, <span class="st">'DISPLAY_FIRST_LAST'</span>, <span class="st">'ended_sequences'</span>))</span>
+<span id="cb51-7"><a href="#cb51-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb51-8"><a href="#cb51-8" aria-hidden="true" tabindex="-1"></a>xT <span class="ot">=</span> init_players <span class="sc">%&gt;%</span> <span class="fu">left_join</span>(end_players) <span class="sc">%&gt;%</span></span>
+<span id="cb51-9"><a href="#cb51-9" aria-hidden="true" tabindex="-1"></a>  <span class="fu">select</span>(<span class="fu">c</span>(<span class="st">'DISPLAY_FIRST_LAST'</span>, <span class="st">'player_id'</span>, <span class="fu">everything</span>())) <span class="sc">%&gt;%</span></span>
+<span id="cb51-10"><a href="#cb51-10" aria-hidden="true" tabindex="-1"></a>  <span class="fu">mutate</span>(<span class="at">xT =</span> total_init_eV<span class="sc">+</span>tot_xPts) <span class="sc">%&gt;%</span></span>
+<span id="cb51-11"><a href="#cb51-11" aria-hidden="true" tabindex="-1"></a>  <span class="fu">rename</span>(<span class="at">player_name =</span> DISPLAY_FIRST_LAST)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Joining with `by = join_by(player_id)`</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb53"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb53-1"><a href="#cb53-1" aria-hidden="true" tabindex="-1"></a>xT <span class="sc">%&gt;%</span> <span class="fu">arrange</span>(<span class="fu">desc</span>(xT)) <span class="sc">%&gt;%</span> <span class="fu">head</span>(<span class="dv">5</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 5 × 9
+  player_name    player_id total_init_eV eV_per_sequence init_sequences tot_xPts
+  &lt;chr&gt;              &lt;dbl&gt;         &lt;dbl&gt;           &lt;dbl&gt;          &lt;int&gt;    &lt;dbl&gt;
+1 Giannis Antet…    203507          179.           0.441            405    1128.
+2 Shai Gilgeous…   1628983          168.           0.443            380    1087.
+3 Anthony Edwar…   1630162          161.           0.452            356     980.
+4 Jayson Tatum     1628369          146.           0.455            321     969.
+5 Jalen Green      1630224          129.           0.447            288     970.
+# ℹ 3 more variables: xPts_per_sequence &lt;dbl&gt;, ended_sequences &lt;int&gt;, xT &lt;dbl&gt;</code></pre>
+</div>
+</div>
 </section>
 </section>
 <section id="analyzing-model-results" class="level2">
 <h2 class="anchored" data-anchor-id="analyzing-model-results">Analyzing Model Results</h2>
+<p>With the combination of EPV and xPts into xT, this new metric can be assessed in two different modes, as an average per sequence of play, or as a total over a season. The latter, shown directly below, demonstrates several notable, impactful athletes on their respective teams. In the course of the 2024 season, three of the previous four league MVPs (Gilgeous-Alexander, Jokic, Antetokounmpo) appear within the top 20, alongside a series of All-Stars in the previous two regular seasons. Qualitatively, it appears that the total view of xT identifies athletes who have accured personal accolades, along with team success and scoring efficiency.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb55"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb55-1"><a href="#cb55-1" aria-hidden="true" tabindex="-1"></a>top_20_xT <span class="ot">=</span> xT <span class="sc">%&gt;%</span> <span class="fu">group_by</span>(player_name) <span class="sc">%&gt;%</span> <span class="fu">summarise</span>(<span class="at">tot_xT =</span> tot_xPts <span class="sc">+</span> total_init_eV) <span class="sc">%&gt;%</span> <span class="fu">arrange</span>(<span class="fu">desc</span>(tot_xT)) <span class="sc">%&gt;%</span> <span class="fu">head</span>(<span class="dv">20</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Warning: Returning more (or less) than 1 row per `summarise()` group was deprecated in
+dplyr 1.1.0.
+ℹ Please use `reframe()` instead.
+ℹ When switching from `summarise()` to `reframe()`, remember that `reframe()`
+  always returns an ungrouped data frame and adjust accordingly.</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>`summarise()` has grouped output by 'player_name'. You can override using the
+`.groups` argument.</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb58"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb58-1"><a href="#cb58-1" aria-hidden="true" tabindex="-1"></a><span class="fu">ggplot</span>(top_20_xT, <span class="fu">aes</span>(player_name, tot_xT)) <span class="sc">+</span></span>
+<span id="cb58-2"><a href="#cb58-2" aria-hidden="true" tabindex="-1"></a>  <span class="fu">geom_col</span>() <span class="sc">+</span></span>
+<span id="cb58-3"><a href="#cb58-3" aria-hidden="true" tabindex="-1"></a>  <span class="fu">theme</span>(<span class="at">axis.text.x =</span> <span class="fu">element_text</span>(<span class="at">angle =</span> <span class="dv">45</span>, <span class="at">hjust =</span> <span class="dv">1</span>)) <span class="sc">+</span></span>
+<span id="cb58-4"><a href="#cb58-4" aria-hidden="true" tabindex="-1"></a>  <span class="fu">labs</span>(<span class="at">x =</span> <span class="st">"Player"</span>, <span class="at">y=</span> <span class="st">"xT per Sequence in 2024"</span>, <span class="at">title =</span> <span class="st">"Top 20 xT per Sequence Contributors in 2024"</span>, <span class="at">subtitle=</span><span class="st">"Min. 1000 sequences"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<div>
+<figure class="figure">
+<p><img src="Report_files/figure-html/unnamed-chunk-20-1.png" class="img-fluid figure-img" width="672"></p>
+</figure>
+</div>
+</div>
+<div class="sourceCode cell-code" id="cb59"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb59-1"><a href="#cb59-1" aria-hidden="true" tabindex="-1"></a>top_20_xT</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 20 × 2
+# Groups:   player_name [20]
+   player_name             tot_xT
+   &lt;chr&gt;                    &lt;dbl&gt;
+ 1 Giannis Antetokounmpo    1307.
+ 2 Shai Gilgeous-Alexander  1256.
+ 3 Anthony Edwards          1141.
+ 4 Jayson Tatum             1115.
+ 5 Jalen Green              1098.
+ 6 Cade Cunningham          1080.
+ 7 Nikola Jokić             1069.
+ 8 Devin Booker             1040.
+ 9 Karl-Anthony Towns       1022.
+10 Alperen Sengun           1005.
+11 LeBron James              995.
+12 Tyler Herro               984.
+13 DeMar DeRozan             977.
+14 Zach LaVine               974.
+15 Pascal Siakam             967.
+16 Donovan Mitchell          951.
+17 Bam Adebayo               922.
+18 Trae Young                919.
+19 Jalen Williams            892.
+20 Ivica Zubac               890.</code></pre>
+</div>
+</div>
+<p>The other mode identified, an average per sequence of play, still defines several of the same players, and those within the same “caliber,” but it also includes players who take a high-volume of optimized xPts shots, notably high-volume three-point shooters. Namely, this includes the likes of Malik Beasley, Norman Powell, and Shaedon Sharpe, while aforementioned players such as Jokic and other high-usage, varied shooters like Anthony Edwards fall out of the top 20.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb61"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb61-1"><a href="#cb61-1" aria-hidden="true" tabindex="-1"></a>top_20_xT_per_seq_min_1000_seq <span class="ot">=</span> xT <span class="sc">%&gt;%</span> <span class="fu">group_by</span>(player_name) <span class="sc">%&gt;%</span> <span class="fu">filter</span>(init_sequences <span class="sc">+</span> ended_sequences <span class="sc">&gt;</span> <span class="dv">1000</span>) <span class="sc">%&gt;%</span> <span class="fu">summarise</span>(<span class="at">xT_per_sequence =</span> xPts_per_sequence <span class="sc">+</span> eV_per_sequence) <span class="sc">%&gt;%</span> <span class="fu">arrange</span>(<span class="fu">desc</span>(xT_per_sequence)) <span class="sc">%&gt;%</span> <span class="fu">head</span>(<span class="dv">20</span>)</span>
+<span id="cb61-2"><a href="#cb61-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-3"><a href="#cb61-3" aria-hidden="true" tabindex="-1"></a><span class="fu">ggplot</span>(top_20_xT_per_seq_min_1000_seq, <span class="fu">aes</span>(player_name, xT_per_sequence)) <span class="sc">+</span> </span>
+<span id="cb61-4"><a href="#cb61-4" aria-hidden="true" tabindex="-1"></a>  <span class="fu">geom_col</span>() <span class="sc">+</span> </span>
+<span id="cb61-5"><a href="#cb61-5" aria-hidden="true" tabindex="-1"></a>  <span class="fu">theme</span>(<span class="at">axis.text.x =</span> <span class="fu">element_text</span>(<span class="at">angle =</span> <span class="dv">45</span>, <span class="at">hjust =</span> <span class="dv">1</span>)) <span class="sc">+</span></span>
+<span id="cb61-6"><a href="#cb61-6" aria-hidden="true" tabindex="-1"></a>  <span class="fu">labs</span>(<span class="at">x =</span> <span class="st">"Player"</span>, <span class="at">y=</span> <span class="st">"xT/Seq in 2024"</span>, <span class="at">title =</span> <span class="st">"Top 20 xT/Seq Contributors in 2024"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<div>
+<figure class="figure">
+<p><img src="Report_files/figure-html/unnamed-chunk-21-1.png" class="img-fluid figure-img" width="672"></p>
+</figure>
+</div>
+</div>
+<div class="sourceCode cell-code" id="cb62"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb62-1"><a href="#cb62-1" aria-hidden="true" tabindex="-1"></a>top_20_xT_per_seq_min_1000_seq</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code># A tibble: 20 × 2
+   player_name             xT_per_sequence
+   &lt;chr&gt;                             &lt;dbl&gt;
+ 1 Mikal Bridges                      1.27
+ 2 Tyrese Maxey                       1.23
+ 3 Zach LaVine                        1.21
+ 4 OG Anunoby                         1.18
+ 5 Darius Garland                     1.17
+ 6 Shai Gilgeous-Alexander            1.17
+ 7 Kyrie Irving                       1.15
+ 8 Shaedon Sharpe                     1.15
+ 9 Jalen Green                        1.15
+10 Norman Powell                      1.15
+11 Jamal Murray                       1.14
+12 Giannis Antetokounmpo              1.14
+13 Anthony Edwards                    1.14
+14 CJ McCollum                        1.14
+15 RJ Barrett                         1.14
+16 Christian Braun                    1.14
+17 Trey Murphy III                    1.13
+18 Malik Beasley                      1.13
+19 Tyrese Haliburton                  1.13
+20 Anfernee Simons                    1.13</code></pre>
+</div>
+</div>
 </section>
 <section id="conclusion" class="level2">
 <h2 class="anchored" data-anchor-id="conclusion">Conclusion</h2>
+<p>Based on the findings above, we can see that there is merit in utilizing an xT-related metric for multifaceted use cases. Primarily, given the subsequent analysis above when applying our models to the 2024 NBA regular season, our findings have indicated that the combination of initial EPV and xPts based on ending location, given play-by-play data, can be applied to define highly impactful players over the entirety of an NBA season, or to define highly efficient players given their shot selection when viewing xT per sequence. Further, the combination of both EPV and xPts, rather than leveraging one or the other, provides a considerable benefit when assessing a player holistically rather than focusing on “one end of the court.”</p>
+<p>Even so, our modelling procedure and analysis can be further developed, primarily regarding the usage of different statistical applications. Specifically, within our initial research process, XGBoost was identified as a target to use either for xPts modelling, or deriving an estimated value for whole sequence. While the approach we’ve identified above evidently does indicate player value and impact, leveraging XGBoost would provide another lens to assessing the various subproblems. Furthermore, while our datasets were rich in shot-related information and location data on different states of play, sourcing a more robust dataset of intra-sequence data could provide the basis for related analyses on the impact of passers, player positioning, and other key findings other than shooters and initiators.</p>
 </section>
 </section>
 

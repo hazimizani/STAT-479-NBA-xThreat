@@ -1,9 +1,32 @@
 ---
-title: "Project 1: Deriving Expected Possession from Play-By-Play Context"
+title: "Project 1: Deriving Expected Possession Values and 'Threat' from Play-By-Play Context"
 format: html
 editor: visual
 authors: Rohan Ahuja, Hazim bin Mohd Izani, Mason Langer
 ---
+
+```{r setup, include=FALSE}
+library(hoopR)
+library(ranger)
+library(hoopR)  
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(janitor)
+library(ggplot2)
+library(hoopR)
+library(purrr)
+library(lubridate)
+library(tibble)
+library(readr)
+library(forcats)
+library(rsample)
+library(yardstick)
+library(recipes)
+library(workflows)
+library(parsnip)
+
+```
 
 # Executive Summary
 
@@ -11,9 +34,7 @@ Our project aims to define the expected outcome value of an in-game possession b
 
 Similar advanced statistics have been proposed and implemented for basketball analytics. Particularly the likes of Adjusted Plus-Minus (+/-) have long been used to estimate the efficacy of a player based on their team's performance while on the court. Further, football (soccer) analytics utilizes an expected goals (xG) model to estimate the probability that a shot results in a goal given a number of factors, including where the shot occured on the pitch, where the nearest defender was, and whether the player was on the left or the right side of the field. These statistics provided motivation for our model, which considered aspects of both, namely player contribution and expectation based on play context. However, our derived metric diverged, aiming to abstract higher than the single player action-level (e.g. a shot) while also identifying players who initiated/ended successful sequences of play at a higher rate than their peers.
 
-In order to engineer an accurate final expected possession value model, we developed three models using the same set of data to determine which methodology would lead to the most refined results. With the model we determined to be the most effective based on several statistical insights and qualitative analysis, we have found...
-
-*Results go here...*
+In order to engineer an accurate final expected possession value model, we iteratively developed a workflow of three different models by using a set of play-by-play data to conclude a successful estimated threat model. With the final model in place and subsequent analysis of its results based on statistical insights and qualitative analysis, we have found that the expected threat (xT) metric is able to holistically model a player's impact on the court. Particularly, using the metric as either a total (a player's impact over a full season) or as an average per sequence of play, two different insights can be learned. For the former, xT tends to converge with other advanced metrics often employed to describe elite, All-Star athletes or MVP-caliber players. For instance, with this approach, we have found players like former MVPs such as Giannis Antetokounmpo and Nikola Jokic, alongside burgeoning star players like Alperen Sengun and Anthony Edwards, to be among the upper echelon of total xT. On the other hand, viewing the metric as an average per sequence of play tends to reveal players that may not traditionally be among the highest caliber of player, but take a high volume of highly advantageous shots, like Malik Beasley, OG Anunoby, and Darius Garland.
 
 # Technical Report
 
@@ -23,23 +44,752 @@ In order to replicate the models and findings below, the following libraries are
 ```{r}
 #| output: false
 ##install.packages("hoopR", "ranger","xgboost")
-library(tidyverse)
 library(hoopR)
 library(ranger)
-library(xgboost)
+library(hoopR)  
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(janitor)
+library(ggplot2)
+library(hoopR)
+library(purrr)
+library(lubridate)
+library(tibble)
+library(readr)
+library(forcats)
+library(rsample)
+library(yardstick)
+library(recipes)
+library(workflows)
+library(parsnip)
 ```
 :::
 
 ## Gathering Data
 
+Data for the report was sourced using the hoopR library to gather play-by-play (often denoted as *pbp*) data and detailed shot-related data. With this, we were able to derive relative coordinates where plays were initiated and ended, alongside distance to the offensive team's basket, and how a sequence of play started.
+
+Specific hoopR endpoints that were used throughout our research include *load_nba_pbp* and *nba_shotchartdetail*, along with scripts wrote to parse PBP data into condensed features representing a "sequence of play." These sequences of play, as detailed above, include coordinates for the starting and ending locations, the action that started a play and ended the sequence, distance to hoop, and which area of the court the play ended.
+
+::: callout-note
+To run the following code, certain helper functions and data are expected to be used, including:
+
+```{r dependencies}
+#| output: false
+SEASONS <- 2024:2025
+OUT_DIR <- "xg_outputs_pbp"
+dir.create(OUT_DIR, showWarnings = FALSE)
+
+`%||%` <- function(a, b) if (is.null(a) || length(a) == 0 || (is.character(a) && a == "")) b else a
+nz <- function(x) ifelse(is.na(x), 0, x)
+first2 <- function(x) { w <- which(!is.na(x)); if (length(w)) x[w[1]] else NA }
+last2  <- function(x) { w <- which(!is.na(x)); if (length(w)) x[w[length(w)]] else NA }
+
+to01 <- function(y) {
+  if (is.factor(y)) as.numeric(y) - 1L else as.numeric(y)
+}
+
+brier <- function(y, p) {
+  y_num <- to01(y)
+  p <- pmin(pmax(p, 1e-12), 1 - 1e-12)
+  mean((y_num - p)^2, na.rm = TRUE)
+}
+
+logloss <- function(y, p) {
+  y_num <- to01(y)
+  p <- pmin(pmax(p, 1e-12), 1 - 1e-12)
+  -mean(y_num*log(p) + (1 - y_num)*log(1 - p), na.rm = TRUE)
+}
+
+eval_model <- function(name, y_tr, p_tr, y_te, p_te){
+  cat("\n===", name, "===\n")
+  cat("Train  Brier:", round(brier(y_tr, p_tr), 4),
+      "| LogLoss:", round(logloss(y_tr, p_tr), 4))
+  cat("Test   Brier:", round(brier(y_te, p_te), 4),
+      "| LogLoss:", round(logloss(y_te, p_te), 4))
+}
+
+# mirror ESPN full-court x (0..100) into single attacking half (0..50)
+to_halfcourt <- function(x, y) tibble(x = ifelse(x > 50, 100 - x, x), y = y)
+
+get_teams_for_season <- function(season) {
+  pbp <- hoopR::load_nba_pbp(season) %>% clean_names()
+
+  home <- pbp %>%
+    transmute(
+      id  = as.integer(home_team_id),
+      full_name = home_team_name,
+      abbreviation = home_team_abbrev,
+      season = season
+    )
+
+  away <- pbp %>%
+    transmute(
+      id  = as.integer(away_team_id),
+      full_name = away_team_name,
+      abbreviation = away_team_abbrev,
+      season = season
+    )
+
+  bind_rows(home, away) %>%
+    filter(!is.na(id), !is.na(full_name), full_name != "") %>%
+    distinct(id, full_name, abbreviation, season) %>%
+    arrange(id)
+}
+
+teams <- purrr::map_df(SEASONS, get_teams_for_season)
+sequences = readr::read_csv('./data/ALL_SEQUENCES_2024.csv')
+```
+:::
+
 ## Creating Expected Possession Value Models
 
-### Laplace Smoothing
+### Estimated Value Added for Play Initiation with Laplace Smoothing
 
-### Random Forest
+To get a baseline for an [estimated point value]{.underline} (EPV) at the beginning of a sequence of play, whether that's off of a rebound, an inbound, or a turnover, the previous season's PBP data was used to derive the EPV of each initiating action.
 
-### XGBoost
+In order to begin this assessment, NBA PBP data was sourced, parsed, and reformatted as detailed below.
+
+```{r}
+cand <- hoopR::most_recent_nba_season()
+candidate_seasons <- c(cand - 1L, cand)  # eg try 2024 first, then 2025 -> this is to get the latest season
+
+# returns NULL if the call errors or returns an empty frame. this avoids hard stops if a season isnt available
+load_one <- function(s) {
+  out <- try(hoopR::load_nba_pbp(seasons = s) %>% janitor::clean_names(), silent = TRUE)
+  if (inherits(out, "try-error")) return(NULL)
+  if (!is.data.frame(out) || nrow(out) == 0) return(NULL)
+  out
+}
+
+# keeps first non empty results as pbp_raw
+pbp_raw <- NULL; season_used <- NA_integer_
+for (s in candidate_seasons) {
+  tmp <- load_one(s)
+  if (!is.null(tmp)) { pbp_raw <- tmp; season_used <- s; break }
+}
+stopifnot(!is.null(pbp_raw), nrow(pbp_raw) > 0) #just ensures we load something
+
+# Normalization helpers (no mixedtype coalesce) 
+safe_coalesce_chr <- function(df, candidates) {
+  v <- rep(NA_character_, nrow(df))
+  for (nm in candidates) {
+    if (nm %in% names(df)) {
+      src <- df[[nm]]
+      csrc <- as.character(src)
+      csrc[is.na(src)] <- NA_character_
+      v <- ifelse(is.na(v) | v == "", csrc, v)
+    }
+  }
+  v
+}
+
+# Build normalized vectors 
+clock_vec <- safe_coalesce_chr(pbp_raw, c("clock_display_value","clock"))
+text_vec  <- safe_coalesce_chr(pbp_raw, c("text","type_text","play_text","description"))
+
+coord_x <- if ("coordinate_x" %in% names(pbp_raw)) suppressWarnings(as.numeric(pbp_raw$coordinate_x)) else rep(NA_real_, nrow(pbp_raw))
+coord_y <- if ("coordinate_y" %in% names(pbp_raw)) suppressWarnings(as.numeric(pbp_raw$coordinate_y)) else rep(NA_real_, nrow(pbp_raw))
+
+score_value_i <- if ("score_value" %in% names(pbp_raw)) suppressWarnings(as.integer(pbp_raw$score_value)) else rep(NA_integer_, nrow(pbp_raw))
+scoring_play_i <- if ("scoring_play" %in% names(pbp_raw)) suppressWarnings(as.integer(pbp_raw$scoring_play)) else rep(NA_integer_, nrow(pbp_raw))
+game_play_number_i  <- if ("game_play_number" %in% names(pbp_raw)) pbp_raw$game_play_number else seq_len(nrow(pbp_raw))
+team_id_chr <- if ("team_id" %in% names(pbp_raw)) as.character(pbp_raw$team_id) else rep(NA_character_, nrow(pbp_raw))
+home_score_i <- if ("home_score" %in% names(pbp_raw)) pbp_raw$home_score else rep(NA_integer_, nrow(pbp_raw))
+away_score_i <- if ("away_score" %in% names(pbp_raw)) pbp_raw$away_score else rep(NA_integer_, nrow(pbp_raw))
+
+# Final normalized PBP table for the season
+pbp <- pbp_raw %>%
+  dplyr::mutate(
+    game_id = as.character(game_id),
+    period = pbp_raw$period,
+    clock = clock_vec,
+    text = text_vec,
+    team_id = team_id_chr,
+    home_score = home_score_i,
+    away_score = away_score_i,
+    coordinate_x = coord_x,
+    coordinate_y = coord_y,
+    score_value = score_value_i,
+    scoring_play = scoring_play_i,
+    game_play_number = game_play_number_i
+  ) %>%
+  dplyr::select(game_id, period, clock, text, team_id, home_score, away_score,
+                coordinate_x, coordinate_y, score_value, scoring_play, game_play_number) %>%
+  dplyr::arrange(game_id, game_play_number)
+
+# Sanity check
+list(
+  season_used= season_used,
+  total_rows = nrow(pbp),
+  unique_games = dplyr::n_distinct(pbp$game_id),
+  rows_with_coords = sum(!is.na(pbp$coordinate_x) & !is.na(pbp$coordinate_y))
+)
+```
+
+With this PBP data, starting context from a shot was reverse engineered to determine how the underlying sequence was initiated.
+
+```{r}
+shots <- pbp %>%
+  dplyr::filter(!is.na(coordinate_x), !is.na(coordinate_y)) %>%
+  dplyr::mutate(
+    tlow = tolower(ifelse(is.na(text), "", as.character(text)))
+  ) %>%
+  dplyr::filter(
+    stringr::str_detect(tlow, "makes|misses"),
+    !stringr::str_detect(tlow, "free throw")
+  ) %>%
+  dplyr::mutate(
+    is_three = stringr::str_detect(tlow, "3[- ]?pt|three"),
+    points_attempt = dplyr::if_else(is_three, 3L, 2L),
+    points_scored = nz(dplyr::if_else(scoring_play == 1L, score_value, 0L))
+  )
+
+shots_poss <- shots %>%
+  dplyr::arrange(game_id, game_play_number) %>%
+  dplyr::group_by(game_id) %>%
+  dplyr::mutate(
+    team_id_shot = as.character(team_id),
+    prev_team = dplyr::lag(team_id_shot),
+    prev_points = dplyr::lag(points_scored),
+    same_team = !is.na(prev_team) & team_id_shot == prev_team,
+
+    start_ctx = dplyr::case_when(
+      is.na(prev_team) ~ "Start of Game",
+      prev_points > 0 ~ "After Opp MAKE (inbound)", # after a make, possession flips
+      prev_points == 0 & same_team ~ "Same Team (2nd chance)", # miss + off. rebound
+      prev_points == 0 & !same_team ~ "After Opp MISS (def reb/transition)",  # miss + def. rebound
+      TRUE ~ "Unknown"
+    ),
+
+    # Possession proxy id: increment when shooting team changes
+    poss_id_shot = cumsum(dplyr::row_number() == 1L |
+                          team_id_shot != dplyr::lag(team_id_shot, default = first(team_id_shot))),
+
+    points_offense = points_scored
+  ) %>%
+  dplyr::ungroup()
+
+# Sanity checks
+list(
+  n_possessions_shot = nrow(shots_poss),
+  ppp_shot_only_fg = round(mean(shots_poss$points_offense, na.rm = TRUE), 3)
+)
+
+shots_poss %>% dplyr::count(start_ctx, sort = TRUE)
+```
+
+From aggregating and summarizing over each context, the following values are generated off of a sequence beginning with that specified context.
+
+```{r}
+# count shots per context
+ctx_counts <- shots_poss %>%
+  dplyr::count(start_ctx, sort = TRUE)
+ctx_counts
+
+# EPV_start = mean points per shot-possession given the start context
+epv_start_ctx <- shots_poss %>%
+  dplyr::group_by(start_ctx) %>%
+  dplyr::summarise(
+    n_poss = dplyr::n(),
+    epv_start = mean(points_offense, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(desc(epv_start))
+epv_start_ctx
+
+# Quick bar chart
+ggplot2::ggplot(epv_start_ctx, ggplot2::aes(reorder(start_ctx, epv_start), epv_start)) +
+  ggplot2::geom_col() +
+  ggplot2::coord_flip() +
+  ggplot2::labs(title = "EPV at Possession Start (by start context)",
+                x = NULL, y = "Expected Points per Shot-Possession")
+```
+
+The results of this modelling approach are rather intuitive. A sequence beginning off of a second-chance play, typically an offensive rebound, generated the most EPV per possession. Further, the EPV of closely related actions, like rebounds, inbound plays, and tip-offs do not drastically deviate. As a whole, this approach lays the foundation for further analysis including other attributes of a starting action, such as location information and other contexts (turnovers, etc.).
+
+### Deriving XPts with Laplace Smoothing and Random Forest Approaches
+
+In order to estimate the value of a shot given its location, two approaches were identified: a Bayesian conditional probability approach leveraging binning based on shot location with Laplace smoothing, and a Random Forest classifer.
+
+With the Laplace Smoothing approach, we can determine a foundation for areas of the court that optimize a shot's value. Rather intuitively, this tends to skew toward shots closer to the basket, while some grids close to half-court were identified as having a high EP/FGA. These cases are likely due to a relative small amount of shot attempts within those bins, with a relatively high amount of successful events.
+
+```{r}
+# Filter to field-goal attempts with coordinates (exclude free throws)
+shots <- pbp %>%
+  dplyr::filter(!is.na(coordinate_x), !is.na(coordinate_y)) %>%
+  dplyr::mutate(
+    tlow = tolower(ifelse(is.na(text), "", as.character(text)))
+  ) %>%
+  dplyr::filter(
+    stringr::str_detect(tlow, "makes|misses"),
+    !stringr::str_detect(tlow, "free throw")
+  ) %>%
+  dplyr::mutate(
+    is_three = stringr::str_detect(tlow, "3[- ]?pt|three"),
+    points_attempt = dplyr::if_else(is_three, 3L, 2L),
+    points_scored = nz(dplyr::if_else(scoring_play == 1L, score_value, 0L))
+  )
+
+# Mirror full court to a single attacking half and bin into a coarse grid
+GRID_NX <- 20; GRID_NY <- 14
+hc <- to_halfcourt(shots$coordinate_x, shots$coordinate_y)
+
+shots <- dplyr::bind_cols(shots, hc) %>%
+  dplyr::mutate(
+    gx = cut(x, breaks = seq(0, 50, length.out = GRID_NX + 1), labels = FALSE, include.lowest = TRUE),
+    gy = cut(y, breaks = seq(0, 50, length.out = GRID_NY + 1), labels = FALSE, include.lowest = TRUE)
+  ) %>%
+  dplyr::filter(!is.na(gx), !is.na(gy))
+
+# Global expected points per FGA (baseline prior)
+global_ep_fga <- sum(shots$points_scored, na.rm = TRUE) / nrow(shots)
+
+# Laplace smoothing toward the global prior
+LAPLACE <- 150
+
+cell <- shots %>%
+  dplyr::group_by(gx, gy) %>%
+  dplyr::summarise(
+    fga = dplyr::n(),
+    pts = sum(points_scored),
+    ep_fga_raw = pts / fga,
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    ep_fga = (pts + LAPLACE * global_ep_fga) / (fga + LAPLACE)
+  )
+
+# Quick report and heatmap
+list(
+  n_shots = nrow(shots),
+  grid_cells = nrow(cell),
+  global_ep_fga = round(global_ep_fga, 3)
+)
+
+cell %>%
+  ggplot2::ggplot(ggplot2::aes(gx, gy, fill = ep_fga)) +
+  ggplot2::geom_tile() +
+  ggplot2::coord_fixed() +
+  ggplot2::scale_fill_viridis_c(name = "EP/FGA") +
+  ggplot2::labs(
+    title = "Shot Value Surface (EP per FGA, Laplace-smoothed)",
+    x = "Court X bin → (halfcourt)", 
+    y = "Court Y bin ↑"
+  )
+
+```
+
+This approach can be used to underlie the intuition of a regression task to utilize detailed shot information such as coordinate placement, the angle to the basket, and indicators for shot-related attributes to estimate the probability of a successful shot. Given the high-dimensional aspect of this dataset, this regression task was modeled using a Random Forest.
+
+To start, the PBP data must be reconstructed to define indicators for shot zones and types (TPA, FT, mid range) and computed attributes, like shot angles.
+
+```{r}
+pbp <- purrr::map_df(SEASONS, ~ hoopR::load_nba_pbp(.x)) %>% clean_names()
+
+# Keep only field-goal shot attempts (exclude FTs), and keep ESPN shot coords
+pbp <- pbp %>%
+  mutate(
+    txt = tolower(coalesce(type_text, text)),
+    is_ft = str_detect(txt, "free throw")
+  )
+
+shots <- pbp %>%
+  filter(shooting_play == TRUE, !is_ft) %>%
+  transmute(
+    season,
+    game_id,
+    game_event_id = id,                # ESPN event id
+    team_id,
+    player_id = athlete_id_1,          # shooter (may be NA for some events)
+    period = coalesce(period, period_number),
+    clock_min = clock_minutes,
+    clock_sec = clock_seconds,
+    # outcome & value
+    made = as.integer(score_value > 0),  # for FGA, 2/3 on makes, 0 on misses
+    is_three = case_when(
+      str_detect(tolower(text), "three") ~ 1,
+      .default = 0
+    ),
+    shot_value = case_when(
+      is_three == 1 ~ 3,
+      is_ft ~ 1,
+      .default = 2
+    ),
+    # location (ESPN coords already provided in PBP)
+    x_raw = as.numeric(coordinate_x),
+    y_raw = as.numeric(coordinate_y),
+    # optional game context you might want later
+    home_score = as.integer(home_score),
+    away_score = as.integer(away_score)
+  ) %>%
+  filter(!is.na(x_raw), !is.na(y_raw), !is.na(made))
+
+
+rng_x <- range(shots$x_raw, na.rm = TRUE)
+rng_y <- range(shots$y_raw, na.rm = TRUE)
+norm_xy <- function(v, rng) (v - rng[1]) / (rng[2] - rng[1])
+
+# If your court is flipped vertically relative to the offensive hoop, set FLIP_Y <- TRUE
+FLIP_Y <- FALSE
+
+shots <- shots %>%
+  mutate(
+    x01 = norm_xy(x_raw, rng_x),
+    y01 = norm_xy(y_raw, rng_y),
+    y01 = if (FLIP_Y) 1 - y01 else y01,
+    # Centered coords (0 at middle)
+    xc = x01 - 0.5,
+    yc = y01 - 0.5,
+    r  = sqrt(xc^2 + yc^2),
+    angle = atan2(yc, xc),
+    angle_deg = angle * 180/pi,
+    # coarse zones on normalized court
+    corner3 = as.integer(is_three == 1L & abs(yc) < 0.15 & abs(xc) > 0.40),
+    above_break3 = as.integer(is_three == 1L & !corner3),
+    paint = as.integer(is_three == 0L & abs(xc) < 0.16 & yc < 0.27),
+    midrange = as.integer(is_three == 0L & !paint),
+    period = factor(period)
+  )
+
+set.seed(479)
+game_split <- shots %>%
+  distinct(game_id) %>%
+  mutate(split = sample(c("train","test"), n(), TRUE, c(0.8,0.2)))
+shots <- shots %>% left_join(game_split, by="game_id")
+
+d_train <- shots %>% filter(split=="train")
+d_test  <- shots %>% filter(split=="test")
+
+```
+
+With this, the Random Forest classifier can now be fitted on a training set of PBP data, and evaluated using Brier loss and log-loss on the testing set.
+
+```{r}
+#| result: false
+#| output: false
+base_formula <- as.formula(
+  "made ~ xc + yc + r + angle_deg + is_three + corner3 + above_break3 + paint + midrange + period"
+)
+rf_fit <- ranger(
+  formula = base_formula,
+  data = d_train %>% mutate(made = factor(made, levels=c(0,1))),
+  probability = TRUE,
+  num.trees = 1200,
+  mtry = 5,
+  min.node.size = 50,
+  seed = 479
+)
+
+rf_train_p <- predict(rf_fit, data = d_train)$predictions[, "1"]
+rf_test_p  <- predict(rf_fit, data = d_test)$predictions[, "1"]
+```
+
+```{r}
+# re-run summaries
+eval_model("RandomForest", d_train$made, rf_train_p, d_test$made, rf_test_p)
+```
+
+Now, the Random Forest classifer can be applied to each event, multipled by their respective shot type to get xPts, and aggregated by shooter to determine which players in the 2024 season had the greatest totals of xPts.
+
+```{r}
+d_test_preds <- d_test %>%
+  mutate(
+    xg_rf  = rf_test_p,
+    xep_rf  = xg_rf  * shot_value
+  ) %>%
+  select(season, game_id, game_event_id, team_id, player_id,
+         period, x_raw, y_raw, xc, yc, made, is_three, shot_value,
+         xg_rf, xep_rf)
+
+##write_csv(d_test_preds, file.path(OUT_DIR, "shots_xg_xep_pbp_test.csv"))
+
+# Player summaries (if shooter id is present)
+player_meta <- pbp %>%
+  filter(shooting_play == TRUE, !is.na(athlete_id_1), !is.na(text)) %>%
+  transmute(
+    player_id   = as.integer(athlete_id_1),
+    # grab first "Firstname Lastname" before 'makes/misses'
+    player_name = str_extract(text, "^[A-Z][a-zA-Z\\-'.]+\\s[A-Z][a-zA-Z\\-'.]+")
+  ) %>%
+  filter(!is.na(player_name)) %>%
+  mutate(player_name = str_squish(player_name)) %>%
+  count(player_id, player_name, sort = TRUE) %>%
+  group_by(player_id) %>% slice_max(n, n = 1, with_ties = FALSE) %>% ungroup() %>%
+  select(player_id, player_name)
+
+# make sure this table is per-player
+player_summary <- d_test_preds %>%
+  mutate(player_id = as.integer(player_id),
+         made_num  = as.numeric(made) - 1L) %>%   # 0/1 for convenience
+  filter(!is.na(player_id)) %>%
+  group_by(player_id) %>%
+  summarise(
+    attempts      = n(),
+    make_rate     = mean(made_num),
+    xg            = mean(xg_rf),
+    xep           = mean(xep_rf),
+    points_actual = sum(ifelse(made == 1, shot_value, 0)),
+    xep_total     = sum(xep_rf),
+    over_perf_pts = points_actual - xep_total,
+    .groups = "drop"
+  )
+
+player_summary_named <- player_summary %>%
+  left_join(player_meta, by = "player_id") %>%
+  relocate(player_name, .before = player_id)
+
+player_summary_named %>%
+  arrange(desc(xep_total)) %>%
+  head(20)
+```
+
+### Combined Model to Estimate Total Value Added Based by Player
+
+The following approach utilizes inspiration from the two described approaches to identifying EPV of a sequence based on the initiating action, along with determining the expected points of a shot given location data.
+
+Unlike the EPV approach above, this EPV approach leverages access to X and Y coordinate data to perform logistic regression with `glm` on a *success* attribute, which identifies if a sequence of play ended in a successful shot. Further, the starting (initiating) actions defined in the dataset diverge slightly from the previously identified start contexts. Primarily, this dataset now includes actions like steals and violations, alongside the previously defined rebounds and inbound plays.
+
+```{r}
+sequences %>% head(10)
+```
+
+Rows in the `sequences` dataset correspond to a sequence of plays that have an initiating action, defined as being one of *inbound*, *rebound*, *steal*, *violation,* or *timeout*, and an ending action, such as *shot* or *turnover*. Each sequence has a corresponding initiating and ending player, based on who did the respective action, except for timeouts, which do not have initiating players.
+
+```{r}
+sequences_w_players = sequences %>% filter(!is.na(init_player_id) & !is.na(end_player_id)) 
+sequences_w_players %>% head(10)
+
+summary = sequences_w_players %>% group_by(init_action, end_action) %>% summarise(
+  occurences = n(),  
+  successes = sum(success)
+) %>% arrange(desc(successes))
+summary
+```
+
+Taking a subset of this dataset which focuses on the initiating action features, specifically location data and action type, the `glm` model can be fitted on the response *success*.
+
+```{r}
+encoded_actions = sequences_w_players %>% mutate(
+  init_action = case_when(
+    init_action == 'inbound' ~ 0,
+    init_action == 'rebound' ~ 1,
+    init_action == 'steal' ~ 2,
+    init_action == 'violation' ~ 3,
+    .default = 0
+  ),
+  end_action = case_when(
+    end_action == 'turnover' ~ 0,
+    end_action == 'shot' ~ 1,
+    .default = 0
+  ),
+  init_play_loc_x = init_play_loc_x/max(sequences_w_players$init_play_loc_x),
+  init_play_loc_y = init_play_loc_y/max(sequences_w_players$init_play_loc_y)
+)
+prob_success = glm(success ~ init_action + init_play_loc_x + init_play_loc_y,
+                   family=binomial,
+                   data = encoded_actions)
+summary(prob_success)
+```
+
+With the model now defined, it can be applied retroactively to previous rows of the sequences dataset to define the probability of a possession being successful based on its type and location. Further, this probability of success will be multiplied by 2 and 3, weighted by the occurrence of each shot type's successes, to define the initial EPV of the sequence.
+
+```{r}
+data_prob_success = encoded_actions %>% select(c(init_player_id, init_action, init_play_loc_x, init_play_loc_y, success, shot_was_tpa))
+test_set_prob_success = data_prob_success %>% sample_frac(size=0.25, replace=FALSE)
+pred_success = predict(prob_success, newdata = test_set_prob_success, type='response')
+test_set_prob_success = test_set_prob_success %>% mutate(pred_success = pred_success)
+```
+
+```{r}
+num_shot_types = encoded_actions %>% filter(shot_was_tpa >= 0 & success == 1) %>% group_by(success, shot_was_tpa) %>% summarise(
+  occurences = n()
+)
+num_shot_types %>% filter(shot_was_tpa >= 0) %>% mutate(
+  pot_val = c(2, 3),
+  exp_val = pot_val*(num_shot_types[num_shot_types$shot_was_tpa == shot_was_tpa,] %>% pull('occurences'))/sum(num_shot_types$occurences)
+)
+```
+
+```{r}
+num_shot_types %>% filter(shot_was_tpa >= 0) %>% mutate(
+  pot_val = c(2, 3),
+  exp_val = pot_val*(num_shot_types[num_shot_types$shot_was_tpa == shot_was_tpa,] %>% pull('occurences'))/sum(num_shot_types$occurences)
+)
+
+ev_glm = test_set_prob_success %>% mutate(init_eV = (1.36*pred_success+0.967*pred_success)) ## calculate expected value
+top_10_initiators = ev_glm %>% group_by(init_player_id) %>% summarise(total_init_eV = sum(init_eV), sequences = n(), eV_per_sequence = sum(init_eV)/n()) %>% arrange(desc(total_init_eV))
+top_10_initiators %>% 
+  left_join(hoopR::nba_commonallplayers(season=year_to_season(2024))$CommonAllPlayers %>%
+              rename(init_player_id = PERSON_ID) %>%
+              mutate(init_player_id = as.numeric(init_player_id)) %>% select(c('init_player_id', 'DISPLAY_FIRST_LAST'))) %>%
+  head(10) %>% rename(player_name = DISPLAY_FIRST_LAST) %>% select(c('player_name', everything()))
+```
+
+With the initial EPV values in place, the expected value of the ending actions can be derived from a model estimating, if a shot was taken from the ending position, the probability of that shot being made. As before, a Random Forest model will be employed for this task.
+
+```{r}
+#| result: false
+#| output: false
+data_eV_end = encoded_actions %>% select(c('success','end_action','end_player_id', 'end_play_loc_x', 'end_play_loc_y', 'shot_distance', 'shot_zone', 'shot_distance', 'shot_result', 'shot_type', 'shot_was_tpa'))
+data_eV_end_shots = data_eV_end %>% filter(!is.na(shot_type) & shot_was_tpa >= 0)
+## Mapping possessions that did not end in shot zone to their given shot zone based on X,Y
+shot_map = data_eV_end_shots %>% 
+  group_by(shot_zone) %>% 
+  summarise(min_x = min(end_play_loc_x), max_x = max(end_play_loc_x), min_y = min(end_play_loc_y), max_y = max(end_play_loc_y))
+
+for(i in 1:nrow(data_eV_end)){
+  if(data_eV_end[i,'shot_zone'] == '-1'){
+    curr_x = data_eV_end[i,] %>% pull(end_play_loc_x)
+    curr_y = data_eV_end[i,] %>% pull(end_play_loc_y)
+    shot_zone = 'Center(C)'
+    for(j in 1:nrow(shot_map)){
+      min_x = shot_map[j,] %>% pull('min_x')
+      max_x = shot_map[j,] %>% pull('max_x')
+      min_y = shot_map[j,] %>% pull('min_y')
+      max_y = shot_map[j,] %>% pull('max_y')
+      if(curr_x >= min_x & curr_x <= max_x & curr_y >= min_y & curr_y <= max_y){
+        shot_zone = shot_map[j,] %>% pull('shot_zone')
+        break
+      }
+    }
+    data_eV_end[i, 'shot_zone'] = shot_zone
+  }
+}
+```
+
+When identifying where a play ended, distance to the target basket (shot distance) can be estimated with a linear model `lm` on the ending action's X and Y coordinate data. From this, it is possible to create relevant data points to be used in the subsequent Random Forest classification.
+
+```{r}
+## Estimating missing distances based on coordinates
+shot_distances = data_eV_end %>% filter(shot_distance >= -1)
+distance_model = lm(shot_distance ~ 1+end_play_loc_y, data=shot_distances)
+dist_predictions = predict(distance_model, newdata=data_eV_end)
+
+data_eV_end = data_eV_end %>% mutate(dist_pred = dist_predictions)
+data_eV_end = data_eV_end %>% mutate(
+  shot_distance = case_when(
+    shot_distance < 0 ~ dist_pred,
+    .default = shot_distance
+  )
+)
+data_eV_end = data_eV_end %>% select(-c('dist_pred'))
+data_eV_end = data_eV_end %>% mutate(shot_distance = round(shot_distance))
+
+## Encode shot_zones to numeric
+encoded_data_eV_end = data_eV_end %>% mutate(
+  shot_zone = case_when(
+    shot_zone == 'Back Court(BC)' ~ 0,
+    shot_zone == 'Center(C)' ~ 1,
+    shot_zone == 'Left Side Center(LC)' ~ 2,
+    shot_zone == 'Left Side(L)' ~ 3,
+    shot_zone == 'Right Side Center(RC)' ~ 4,
+    shot_zone == 'Right Side (R)' ~ 5,
+    .default = 0
+  )
+)
+
+max_x = max(encoded_data_eV_end$end_play_loc_x)
+max_y = max(encoded_data_eV_end$end_play_loc_y)
+max_distance = max(encoded_data_eV_end$shot_distance)
+encoded_data_eV_end = encoded_data_eV_end %>% mutate(
+  end_play_loc_x = end_play_loc_x/max_x,
+  end_play_loc_y = end_play_loc_y/max_y,
+  shot_distance = shot_distance/max_distance,
+  shot_zone = shot_zone/5
+) 
+```
+
+With the new estimations for shot distances in place, the Random Forest model can be fitted and applied to calculate the xPts value across the 2024 season.
+
+```{r}
+xg_model = ranger::ranger(success ~ shot_distance + end_play_loc_x + end_play_loc_y + shot_zone, data=encoded_data_eV_end, probability=TRUE, write.forest = TRUE)
+shot_made_predictions = predict(xg_model, data = encoded_data_eV_end)
+
+predictions = shot_made_predictions$predictions[,2]
+data_eV_end = data_eV_end %>% mutate(
+  pred_shot_made_prob = predictions
+)
+
+test_shot_prob_set = data_eV_end
+three_pt_distance_by_zone = data_eV_end %>% filter(shot_was_tpa >= 1) %>% group_by(shot_zone) %>% summarise(distance = min(shot_distance))
+test_shot_prob_set = test_shot_prob_set %>% mutate(in_three_range = numeric(length=nrow(test_shot_prob_set)))
+## Determining if ending location was in three point range
+for(i in 1:nrow(data_eV_end)){
+  if(test_shot_prob_set[i,'shot_result'] <= -1){
+    test_shot_prob_set[i, 'in_three_range'] = test_shot_prob_set[i, 'shot_distance'] %>% pull() >= three_pt_distance_by_zone[three_pt_distance_by_zone$shot_zone == test_shot_prob_set[i,'shot_zone'] %>% pull(), 'distance'] %>% pull()
+    
+  }
+}
+
+test_shot_prob_set = test_shot_prob_set %>% mutate(
+  xPts = case_when(
+    shot_was_tpa > 0 | in_three_range > 0 ~ 3*pred_shot_made_prob,
+    .default = 3*pred_shot_made_prob
+  )
+) 
+
+test_shot_prob_set %>% group_by(end_player_id) %>% summarise(
+  tot_xPts = sum(xPts)
+) %>% arrange(desc(tot_xPts))
+
+
+### Results of applying model across all sequences, by player
+xPts_w_players = test_shot_prob_set %>% group_by(end_player_id) %>% summarise(
+  tot_xPts = sum(xPts), sequences = n(), xPts_per_sequence = sum(xPts)/n()
+) %>% arrange(desc(tot_xPts)) %>% left_join(hoopR::nba_commonallplayers(season=year_to_season(2024))$CommonAllPlayers %>%
+                                                rename(end_player_id = PERSON_ID) %>%
+                                                mutate(end_player_id = as.numeric(end_player_id)) %>% select(c('end_player_id', 'DISPLAY_FIRST_LAST')))
+xPts_w_players %>% head(10)
+```
+
+Now, the xT metric can be completed by summing a player's EPV from initiating plays and their xPts from plays they ended.
+
+```{r}
+init_players = top_10_initiators %>%
+  rename(player_id = init_player_id, init_sequences = sequences) %>%
+  select(c('player_id', 'total_init_eV', 'eV_per_sequence', 'init_sequences'))
+end_players = xPts_w_players %>% 
+  rename(player_id = end_player_id, ended_sequences = sequences) %>% 
+  select(c('player_id', 'tot_xPts','xPts_per_sequence', 'DISPLAY_FIRST_LAST', 'ended_sequences'))
+
+xT = init_players %>% left_join(end_players) %>%
+  select(c('DISPLAY_FIRST_LAST', 'player_id', everything())) %>%
+  mutate(xT = total_init_eV+tot_xPts) %>%
+  rename(player_name = DISPLAY_FIRST_LAST)
+
+xT %>% arrange(desc(xT)) %>% head(5)
+```
 
 ## Analyzing Model Results
 
+With the combination of EPV and xPts into xT, this new metric can be assessed in two different modes, as an average per sequence of play, or as a total over a season. The latter, shown directly below, demonstrates several notable, impactful athletes on their respective teams. In the course of the 2024 season, three of the previous four league MVPs (Gilgeous-Alexander, Jokic, Antetokounmpo) appear within the top 20, alongside a series of All-Stars in the previous two regular seasons. Qualitatively, it appears that the total view of xT identifies athletes who have accured personal accolades, along with team success and scoring efficiency.
+
+```{r}
+top_20_xT = xT %>% group_by(player_name) %>% summarise(tot_xT = tot_xPts + total_init_eV) %>% arrange(desc(tot_xT)) %>% head(20)
+ggplot(top_20_xT, aes(player_name, tot_xT)) +
+  geom_col() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Player", y= "xT per Sequence in 2024", title = "Top 20 xT per Sequence Contributors in 2024", subtitle="Min. 1000 sequences")
+top_20_xT
+```
+
+The other mode identified, an average per sequence of play, still defines several of the same players, and those within the same "caliber," but it also includes players who take a high-volume of optimized xPts shots, notably high-volume three-point shooters. Namely, this includes the likes of Malik Beasley, Norman Powell, and Shaedon Sharpe, while aforementioned players such as Jokic and other high-usage, varied shooters like Anthony Edwards fall out of the top 20.
+
+```{r}
+top_20_xT_per_seq_min_1000_seq = xT %>% group_by(player_name) %>% filter(init_sequences + ended_sequences > 1000) %>% summarise(xT_per_sequence = xPts_per_sequence + eV_per_sequence) %>% arrange(desc(xT_per_sequence)) %>% head(20)
+
+ggplot(top_20_xT_per_seq_min_1000_seq, aes(player_name, xT_per_sequence)) + 
+  geom_col() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Player", y= "xT/Seq in 2024", title = "Top 20 xT/Seq Contributors in 2024")
+  
+top_20_xT_per_seq_min_1000_seq
+```
+
 ## Conclusion
+
+Based on the findings above, we can see that there is merit in utilizing an xT-related metric for multifaceted use cases. Primarily, given the subsequent analysis above when applying our models to the 2024 NBA regular season, our findings have indicated that the combination of initial EPV and xPts based on ending location, given play-by-play data, can be applied to define highly impactful players over the entirety of an NBA season, or to define highly efficient players given their shot selection when viewing xT per sequence. Further, the combination of both EPV and xPts, rather than leveraging one or the other, provides a considerable benefit when assessing a player holistically rather than focusing on "one end of the court."
+
+Even so, our modelling procedure and analysis can be further developed, primarily regarding the usage of different statistical applications. Specifically, within our initial research process, XGBoost was identified as a target to use either for xPts modelling, or deriving an estimated value for whole sequence. While the approach we've identified above evidently does indicate player value and impact, leveraging XGBoost would provide another lens to assessing the various subproblems. Furthermore, while our datasets were rich in shot-related information and location data on different states of play, sourcing a more robust dataset of intra-sequence data could provide the basis for related analyses on the impact of passers, player positioning, and other key findings other than shooters and initiators.
